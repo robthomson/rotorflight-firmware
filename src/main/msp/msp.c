@@ -124,6 +124,7 @@
 #include "pg/usb.h"
 #include "pg/vcd.h"
 #include "pg/vtx_table.h"
+#include "pg/sbus_output.h"
 
 #include "rx/rx.h"
 #include "rx/rx_bind.h"
@@ -1005,6 +1006,15 @@ static bool mspCommonProcessOutCommand(int16_t cmdMSP, sbuf_t *dst, mspPostProce
         break;
     }
 
+    case MSP_EXPERIMENTAL:
+        /* 
+         * Send your experimental parameters to LUA. Like:
+         *
+         * sbufWriteU8(dst, currentPidProfile->yourFancyParameterA);
+         * sbufWriteU8(dst, currentPidProfile->yourFancyParameterB);
+         */
+        break;
+
     default:
         return false;
     }
@@ -1684,6 +1694,18 @@ static bool mspProcessOutCommand(int16_t cmdMSP, sbuf_t *dst)
         sbufWriteU8(dst, ledStripConfigMutable()->ledstrip_race_color);
         sbufWriteU8(dst, ledStripConfigMutable()->ledstrip_visual_beeper);
         sbufWriteU8(dst, ledStripConfigMutable()->ledstrip_visual_beeper_color);
+        break;
+#endif
+
+#ifdef USE_SBUS_OUTPUT
+    case MSP_SBUS_OUTPUT_SETTINGS:
+        for (int i = 0; i < SBUS_OUT_CHANNELS; i++) {
+            sbufWriteU8(dst, sbusOutConfigMutable()->sourceType[i]);
+            sbufWriteU8(dst, sbusOutConfigMutable()->sourceIndex[i]);
+            sbufWriteS16(dst, sbusOutConfigMutable()->min[i]);
+            sbufWriteS16(dst, sbusOutConfigMutable()->max[i]);
+        }
+        sbufWriteU8(dst, sbusOutConfigMutable()->sbusRate);
         break;
 #endif
 
@@ -3211,6 +3233,20 @@ static mspResult_e mspProcessInCommand(mspDescriptor_t srcDesc, int16_t cmdMSP, 
         break;
 #endif
 
+#ifdef USE_SBUS_OUTPUT
+    case MSP_SET_SBUS_OUTPUT_SETTINGS:
+        if (sbufBytesRemaining(src) >= 6 * SBUS_OUT_CHANNELS + 1) {
+            for (int i = 0; i < SBUS_OUT_CHANNELS; i++) {
+                sbusOutConfigMutable()->sourceType[i] = sbufReadU8(src);
+                sbusOutConfigMutable()->sourceIndex[i] = sbufReadU8(src);
+                sbusOutConfigMutable()->min[i] = sbufReadS16(src);
+                sbusOutConfigMutable()->max[i] = sbufReadS16(src);
+            }
+            sbusOutConfigMutable()->sbusRate = sbufReadU8(src);
+        }
+        break;
+#endif
+
     case MSP_SET_NAME:
         memset(pilotConfigMutable()->name, 0, ARRAYLEN(pilotConfig()->name));
         for (unsigned int i = 0; i < MIN(MAX_NAME_LENGTH, dataSize); i++) {
@@ -3526,6 +3562,17 @@ static mspResult_e mspCommonProcessInCommand(mspDescriptor_t srcDesc, int16_t cm
         }
         break;
 #endif // OSD
+
+    case MSP_SET_EXPERIMENTAL:
+        /*
+         * Receive your experimental parameters from LUA. Like:
+         *
+         * if (sbufBytesRemaining(src) >= 2) {
+         *     currentPidProfile->yourFancyParameterA = sbufReadU8(src);
+         *     currentPidProfile->yourFancyParameterB = sbufReadU8(src);
+         * }
+         */
+        break;
 
     default:
         return mspProcessInCommand(srcDesc, cmdMSP, src);
