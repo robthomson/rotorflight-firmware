@@ -1006,14 +1006,6 @@ static bool mspCommonProcessOutCommand(int16_t cmdMSP, sbuf_t *dst, mspPostProce
         break;
     }
 
-    case MSP_EXPERIMENTAL:
-        /* 
-         * Send your experimental parameters to LUA. Like:
-         *
-         * sbufWriteU8(dst, currentPidProfile->yourFancyParameterA);
-         * sbufWriteU8(dst, currentPidProfile->yourFancyParameterB);
-         */
-        break;
 
     default:
         return false;
@@ -3563,16 +3555,6 @@ static mspResult_e mspCommonProcessInCommand(mspDescriptor_t srcDesc, int16_t cm
         break;
 #endif // OSD
 
-    case MSP_SET_EXPERIMENTAL:
-        /*
-         * Receive your experimental parameters from LUA. Like:
-         *
-         * if (sbufBytesRemaining(src) >= 2) {
-         *     currentPidProfile->yourFancyParameterA = sbufReadU8(src);
-         *     currentPidProfile->yourFancyParameterB = sbufReadU8(src);
-         * }
-         */
-        break;
 
     default:
         return mspProcessInCommand(srcDesc, cmdMSP, src);
