@@ -84,7 +84,9 @@ typedef enum {
     SERIALRX_SBUS2 = 15,
     SERIALRX_FPORT2 = 16,
     SERIALRX_FBUS = 17,
-    SERIALRX_XBUS_MODE_A = 18
+    SERIALRX_XBUS_MODE_A = 18,
+    // FlySky i-BUS2 (UART 1.5M, half-duplex, command/response + channels)
+    SERIALRX_IBUS2 = 19
 } SerialRXType;
 
 #define MAX_SUPPORTED_RC_PPM_CHANNEL_COUNT          12
