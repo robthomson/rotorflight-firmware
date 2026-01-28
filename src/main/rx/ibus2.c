@@ -32,6 +32,10 @@
 
 #ifdef USE_SERIALRX_IBUS2
 
+#include "drivers/serial.h"
+#include "drivers/serial_uart.h"
+#include "drivers/time.h"
+
 #include "common/time.h"
 
 #include "config/feature.h"
