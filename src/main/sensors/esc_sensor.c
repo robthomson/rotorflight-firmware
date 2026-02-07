@@ -88,7 +88,7 @@ enum {
     DEBUG_FRAME_BUFFER,
 };
 
-#define TELEMETRY_BUFFER_SIZE    140
+#define TELEMETRY_BUFFER_SIZE    512
 #define REQUEST_BUFFER_SIZE      64
 #define PARAM_BUFFER_SIZE        96
 #define PARAM_HEADER_SIZE        2
@@ -139,7 +139,7 @@ static uint8_t buffer[TELEMETRY_BUFFER_SIZE] = { 0, };
 static volatile uint8_t bufferSize = 0;
 static volatile uint8_t bufferPos = 0;
 
-static volatile uint8_t readBytes = 0;
+static volatile uint16_t readBytes = 0;
 static volatile uint8_t readIngoreBytes = 0;
 static uint32_t syncCount = 0;
 
@@ -801,9 +801,116 @@ static void hw4SensorProcess(timeUs_t currentTimeUs)
 #define KON_FRAME_LENGTH                40
 #define KON_FRAME_LENGTH_LEGACY         38
 #define KON_CRC_LENGTH                  4
+#define KON_ASCII_SOF                   0xA7
+#define KON_ASCII_EOF                   0x0A
+#define KON_ASCII_MAX_PARAMS            64
+#define KON_PARAM_ESC_STR_LEN           16
+#define KON_PARAM_PAYLOAD_LEN           80
 
 static uint8_t kontronikPacketLength    = 0;    // 40 or 38 byte
 static uint8_t kontronikCrcExclude      = 0;    // 0 or 2
+static uint16_t kontronikAsciiFrameLength = 0;
+
+typedef enum {
+    KON_FRAME_NONE = 0,
+    KON_FRAME_KODL,
+    KON_FRAME_ASCII,
+} kontronikFrameType_e;
+
+static kontronikFrameType_e kontronikFrameType = KON_FRAME_NONE;
+
+typedef struct {
+    uint16_t reg;
+    uint32_t value;
+} kontronikRegValue_t;
+
+typedef struct {
+    uint8_t esc_signature;
+    uint8_t esc_command;
+    char esc_model[KON_PARAM_ESC_STR_LEN];
+    char esc_version[KON_PARAM_ESC_STR_LEN];
+    char firmware_version[KON_PARAM_ESC_STR_LEN];
+    uint16_t bec_voltage;
+    uint8_t rotation;
+    uint8_t fwd_bckwd;
+    uint8_t flight_mode;
+    uint8_t battery_type;
+    uint8_t undervoltage_behavior;
+    uint16_t undervoltage_cell;
+    uint8_t discharge_limiter_act;
+    uint16_t discharge_limit;
+    uint8_t pole_number;
+    uint16_t gear_ratio;
+    uint8_t brake;
+    uint8_t rpm_ctl;
+    uint8_t how_adj_max_rpm;
+    uint16_t max_discharge;
+    uint16_t min_input_voltage;
+    uint16_t max_motor_current;
+    uint16_t max_esc_temp;
+    uint16_t max_bec_temp;
+    uint16_t max_bec_current;
+} kontronikParams_t;
+
+typedef enum {
+    KON_PARAM_BEC_VOLTAGE = 0,
+    KON_PARAM_ROTATION,
+    KON_PARAM_FWD_BCKWD,
+    KON_PARAM_FLIGHT_MODE,
+    KON_PARAM_BATTERY_TYPE,
+    KON_PARAM_UNDERVOLT_BEHAVIOR,
+    KON_PARAM_UNDERVOLT_CELL,
+    KON_PARAM_DISCHARGE_LIMIT,
+    KON_PARAM_POLE_NUMBER,
+    KON_PARAM_GEAR_RATIO,
+    KON_PARAM_BRAKE,
+    KON_PARAM_RPM_CTL,
+    KON_PARAM_HOW_ADJ_MAX_RPM,
+    KON_PARAM_MAX_DISCHARGE,
+    KON_PARAM_MIN_INPUT_VOLTAGE,
+    KON_PARAM_MAX_MOTOR_CURRENT,
+    KON_PARAM_MAX_ESC_TEMP,
+    KON_PARAM_MAX_BEC_TEMP,
+    KON_PARAM_MAX_BEC_CURRENT,
+} kontronikParamId_e;
+
+typedef struct {
+    uint16_t reg;
+    kontronikParamId_e id;
+} kontronikRegMap_t;
+
+// Best-guess register mapping based on observed frame and value ranges.
+static const kontronikRegMap_t kontronikRegMap[] = {
+    { 8208, KON_PARAM_BEC_VOLTAGE },
+    { 8236, KON_PARAM_ROTATION },
+    { 8248, KON_PARAM_FWD_BCKWD },
+    { 8264, KON_PARAM_FLIGHT_MODE },
+    { 8234, KON_PARAM_BATTERY_TYPE },
+    { 8222, KON_PARAM_UNDERVOLT_BEHAVIOR },
+    { 8268, KON_PARAM_UNDERVOLT_CELL },
+    { 8212, KON_PARAM_DISCHARGE_LIMIT },
+    { 8232, KON_PARAM_POLE_NUMBER },
+    { 8226, KON_PARAM_GEAR_RATIO },
+    { 8206, KON_PARAM_BRAKE },
+    { 8220, KON_PARAM_RPM_CTL },
+    { 8218, KON_PARAM_HOW_ADJ_MAX_RPM },
+    { 16432, KON_PARAM_MAX_DISCHARGE },
+    { 8266, KON_PARAM_MIN_INPUT_VOLTAGE },
+    { 8270, KON_PARAM_MAX_MOTOR_CURRENT },
+    { 8272, KON_PARAM_MAX_ESC_TEMP },
+    { 8274, KON_PARAM_MAX_BEC_TEMP },
+    { 8276, KON_PARAM_MAX_BEC_CURRENT },
+};
+
+static kontronikParams_t kontronikParams = { 0 };
+static kontronikRegValue_t kontronikRegValues[KON_ASCII_MAX_PARAMS] = { 0 };
+static uint8_t kontronikRegCount = 0;
+static bool kontronikConfigRequested = false;
+static timeMs_t kontronikLastHandshakeMs = 0;
+
+static const uint8_t kontronikHandshake[1] = { 0 };
+static const uint8_t kontronikHandshakeLen = 0;
+static const uint16_t kontronikHandshakeIntervalMs = 200;
 
 static uint32_t calculateCRC32(const uint8_t *ptr, size_t len)
 {
@@ -823,6 +930,446 @@ static uint32_t kontronikDecodeCRC(uint8_t index)
     return buffer[index + 3] << 24 | buffer[index + 2] << 16 | buffer[index + 1] << 8 | buffer[index];
 }
 
+static void kontronikClearParams(void)
+{
+    memset(&kontronikParams, 0, sizeof(kontronikParams));
+    memset(kontronikParams.esc_model, ' ', KON_PARAM_ESC_STR_LEN);
+    memset(kontronikParams.esc_version, ' ', KON_PARAM_ESC_STR_LEN);
+    memset(kontronikParams.firmware_version, ' ', KON_PARAM_ESC_STR_LEN);
+    kontronikParams.esc_signature = ESC_SIG_KON;
+}
+
+static bool kontronikParseUint(const uint8_t **pp, const uint8_t *end, uint32_t *out)
+{
+    const uint8_t *p = *pp;
+    if (p >= end || *p < '0' || *p > '9')
+        return false;
+
+    uint32_t value = 0;
+    while (p < end && *p >= '0' && *p <= '9') {
+        value = value * 10 + (uint32_t)(*p - '0');
+        p++;
+    }
+    *pp = p;
+    *out = value;
+    return true;
+}
+
+static void kontronikBuildParamPayload(void)
+{
+    uint8_t *p = paramPayload;
+
+    *p++ = kontronikParams.esc_signature;
+    *p++ = kontronikParams.esc_command;
+
+    memcpy(p, kontronikParams.esc_model, KON_PARAM_ESC_STR_LEN); p += KON_PARAM_ESC_STR_LEN;
+    memcpy(p, kontronikParams.esc_version, KON_PARAM_ESC_STR_LEN); p += KON_PARAM_ESC_STR_LEN;
+    memcpy(p, kontronikParams.firmware_version, KON_PARAM_ESC_STR_LEN); p += KON_PARAM_ESC_STR_LEN;
+
+    *p++ = kontronikParams.bec_voltage & 0xFF;
+    *p++ = kontronikParams.bec_voltage >> 8;
+
+    *p++ = kontronikParams.rotation;
+    *p++ = kontronikParams.fwd_bckwd;
+    *p++ = kontronikParams.flight_mode;
+    *p++ = kontronikParams.battery_type;
+    *p++ = kontronikParams.undervoltage_behavior;
+
+    *p++ = kontronikParams.undervoltage_cell & 0xFF;
+    *p++ = kontronikParams.undervoltage_cell >> 8;
+
+    *p++ = kontronikParams.discharge_limiter_act;
+
+    *p++ = kontronikParams.discharge_limit & 0xFF;
+    *p++ = kontronikParams.discharge_limit >> 8;
+
+    *p++ = kontronikParams.pole_number;
+
+    *p++ = kontronikParams.gear_ratio & 0xFF;
+    *p++ = kontronikParams.gear_ratio >> 8;
+
+    *p++ = kontronikParams.brake;
+    *p++ = kontronikParams.rpm_ctl;
+    *p++ = kontronikParams.how_adj_max_rpm;
+
+    *p++ = kontronikParams.max_discharge & 0xFF;
+    *p++ = kontronikParams.max_discharge >> 8;
+
+    *p++ = kontronikParams.min_input_voltage & 0xFF;
+    *p++ = kontronikParams.min_input_voltage >> 8;
+
+    *p++ = kontronikParams.max_motor_current & 0xFF;
+    *p++ = kontronikParams.max_motor_current >> 8;
+
+    *p++ = kontronikParams.max_esc_temp & 0xFF;
+    *p++ = kontronikParams.max_esc_temp >> 8;
+
+    *p++ = kontronikParams.max_bec_temp & 0xFF;
+    *p++ = kontronikParams.max_bec_temp >> 8;
+
+    *p++ = kontronikParams.max_bec_current & 0xFF;
+    *p++ = kontronikParams.max_bec_current >> 8;
+
+    paramPayloadLength = KON_PARAM_PAYLOAD_LEN;
+}
+
+static uint16_t kontronikClampU16(uint32_t value)
+{
+    return (value > UINT16_MAX) ? UINT16_MAX : (uint16_t)value;
+}
+
+static uint8_t kontronikClampU8(uint32_t value)
+{
+    return (value > UINT8_MAX) ? UINT8_MAX : (uint8_t)value;
+}
+
+static void kontronikApplyRegValue(uint16_t reg, uint32_t value)
+{
+    for (unsigned i = 0; i < ARRAYLEN(kontronikRegMap); i++) {
+        if (kontronikRegMap[i].reg != reg)
+            continue;
+
+        switch (kontronikRegMap[i].id) {
+            case KON_PARAM_BEC_VOLTAGE:
+                kontronikParams.bec_voltage = kontronikClampU16(value);
+                break;
+            case KON_PARAM_ROTATION:
+                kontronikParams.rotation = kontronikClampU8(value);
+                break;
+            case KON_PARAM_FWD_BCKWD:
+                kontronikParams.fwd_bckwd = kontronikClampU8(value);
+                break;
+            case KON_PARAM_FLIGHT_MODE:
+                kontronikParams.flight_mode = kontronikClampU8(value);
+                break;
+            case KON_PARAM_BATTERY_TYPE:
+                kontronikParams.battery_type = kontronikClampU8(value);
+                break;
+            case KON_PARAM_UNDERVOLT_BEHAVIOR:
+                kontronikParams.undervoltage_behavior = kontronikClampU8(value);
+                break;
+            case KON_PARAM_UNDERVOLT_CELL:
+                kontronikParams.undervoltage_cell = kontronikClampU16(value);
+                break;
+            case KON_PARAM_DISCHARGE_LIMIT:
+                kontronikParams.discharge_limit = kontronikClampU16(value);
+                break;
+            case KON_PARAM_POLE_NUMBER:
+                kontronikParams.pole_number = kontronikClampU8(value);
+                break;
+            case KON_PARAM_GEAR_RATIO:
+                kontronikParams.gear_ratio = kontronikClampU16(value);
+                break;
+            case KON_PARAM_BRAKE:
+                kontronikParams.brake = kontronikClampU8(value);
+                break;
+            case KON_PARAM_RPM_CTL:
+                kontronikParams.rpm_ctl = kontronikClampU8(value);
+                break;
+            case KON_PARAM_HOW_ADJ_MAX_RPM:
+                kontronikParams.how_adj_max_rpm = kontronikClampU8(value);
+                break;
+            case KON_PARAM_MAX_DISCHARGE:
+                kontronikParams.max_discharge = kontronikClampU16(value);
+                break;
+            case KON_PARAM_MIN_INPUT_VOLTAGE:
+                kontronikParams.min_input_voltage = kontronikClampU16(value);
+                break;
+            case KON_PARAM_MAX_MOTOR_CURRENT:
+                kontronikParams.max_motor_current = kontronikClampU16(value);
+                break;
+            case KON_PARAM_MAX_ESC_TEMP:
+                kontronikParams.max_esc_temp = kontronikClampU16(value);
+                break;
+            case KON_PARAM_MAX_BEC_TEMP:
+                kontronikParams.max_bec_temp = kontronikClampU16(value);
+                break;
+            case KON_PARAM_MAX_BEC_CURRENT:
+                kontronikParams.max_bec_current = kontronikClampU16(value);
+                break;
+        }
+        return;
+    }
+}
+
+static void kontronikParseEFrame(const uint8_t *payload, const uint8_t *end)
+{
+    kontronikRegCount = 0;
+
+    const uint8_t *p = payload;
+    while (p < end && kontronikRegCount < KON_ASCII_MAX_PARAMS) {
+        uint32_t value = 0;
+        uint32_t reg = 0;
+        if (!kontronikParseUint(&p, end, &value))
+            break;
+        if (p >= end || *p != ':')
+            break;
+        p++;
+        if (!kontronikParseUint(&p, end, &reg))
+            break;
+
+        kontronikRegValues[kontronikRegCount].reg = (uint16_t)reg;
+        kontronikRegValues[kontronikRegCount].value = value;
+        kontronikRegCount++;
+        kontronikApplyRegValue((uint16_t)reg, value);
+
+        while (p < end && *p != ';')
+            p++;
+        if (p < end && *p == ';')
+            p++;
+    }
+
+    kontronikBuildParamPayload();
+}
+
+static void kontronikParseRFrame(const uint8_t *payload, const uint8_t *end)
+{
+    const uint8_t *p = payload;
+    while (p + 3 < end) {
+        if (p[0] == '-' && p[1] == '-' && p[2] == 'R' && p[3] == '=') {
+            p += 4;
+            memset(kontronikParams.esc_model, ' ', KON_PARAM_ESC_STR_LEN);
+            uint8_t len = 0;
+            while (p < end && *p != ';' && len < KON_PARAM_ESC_STR_LEN) {
+                kontronikParams.esc_model[len++] = (char)*p;
+                p++;
+            }
+            kontronikBuildParamPayload();
+            return;
+        }
+        p++;
+    }
+}
+
+static bool kontronikDecodeAsciiFrame(void)
+{
+    if (kontronikAsciiFrameLength < 3)
+        return false;
+    if (buffer[0] != KON_ASCII_SOF || buffer[kontronikAsciiFrameLength - 1] != KON_ASCII_EOF)
+        return false;
+
+    const uint8_t type = buffer[1];
+    const uint8_t *payload = buffer + 2;
+    const uint8_t *end = buffer + kontronikAsciiFrameLength - 1;
+
+    switch (type) {
+        case 'E':
+            kontronikParseEFrame(payload, end);
+            break;
+        case 'R':
+            kontronikParseRFrame(payload, end);
+            break;
+        default:
+            break;
+    }
+
+    return true;
+}
+
+static void kontronikMaybeSendHandshake(timeMs_t currentTimeMs)
+{
+    if (!kontronikConfigRequested)
+        return;
+    if (kontronikHandshakeLen == 0)
+        return;
+    if (currentTimeMs - kontronikLastHandshakeMs < kontronikHandshakeIntervalMs)
+        return;
+
+    if (kontronikHandshakeLen <= REQUEST_BUFFER_SIZE) {
+        memcpy(reqbuffer, kontronikHandshake, kontronikHandshakeLen);
+        reqLength = kontronikHandshakeLen;
+        readIngoreBytes = reqLength;
+        serialWriteBuf(escSensorPort, reqbuffer, reqLength);
+    }
+    kontronikLastHandshakeMs = currentTimeMs;
+}
+
+static uint8_t kontronikAppendUint(uint8_t *dst, uint8_t maxlen, uint32_t value)
+{
+    char tmp[11];
+    uint8_t len = 0;
+    do {
+        tmp[len++] = '0' + (value % 10);
+        value /= 10;
+    } while (value && len < sizeof(tmp));
+
+    if (len > maxlen)
+        return 0;
+
+    for (uint8_t i = 0; i < len; i++) {
+        dst[i] = tmp[len - 1 - i];
+    }
+    return len;
+}
+
+static bool kontronikWriteParamPairs(const kontronikParams_t *newParams)
+{
+    uint8_t idx = 0;
+    reqbuffer[idx++] = KON_ASCII_SOF;
+    reqbuffer[idx++] = 'E';
+
+    for (unsigned i = 0; i < ARRAYLEN(kontronikRegMap); i++) {
+        uint32_t value = 0;
+        bool changed = false;
+
+        switch (kontronikRegMap[i].id) {
+            case KON_PARAM_BEC_VOLTAGE:
+                value = newParams->bec_voltage;
+                changed = (newParams->bec_voltage != kontronikParams.bec_voltage);
+                break;
+            case KON_PARAM_ROTATION:
+                value = newParams->rotation;
+                changed = (newParams->rotation != kontronikParams.rotation);
+                break;
+            case KON_PARAM_FWD_BCKWD:
+                value = newParams->fwd_bckwd;
+                changed = (newParams->fwd_bckwd != kontronikParams.fwd_bckwd);
+                break;
+            case KON_PARAM_FLIGHT_MODE:
+                value = newParams->flight_mode;
+                changed = (newParams->flight_mode != kontronikParams.flight_mode);
+                break;
+            case KON_PARAM_BATTERY_TYPE:
+                value = newParams->battery_type;
+                changed = (newParams->battery_type != kontronikParams.battery_type);
+                break;
+            case KON_PARAM_UNDERVOLT_BEHAVIOR:
+                value = newParams->undervoltage_behavior;
+                changed = (newParams->undervoltage_behavior != kontronikParams.undervoltage_behavior);
+                break;
+            case KON_PARAM_UNDERVOLT_CELL:
+                value = newParams->undervoltage_cell;
+                changed = (newParams->undervoltage_cell != kontronikParams.undervoltage_cell);
+                break;
+            case KON_PARAM_DISCHARGE_LIMIT:
+                value = newParams->discharge_limit;
+                changed = (newParams->discharge_limit != kontronikParams.discharge_limit);
+                break;
+            case KON_PARAM_POLE_NUMBER:
+                value = newParams->pole_number;
+                changed = (newParams->pole_number != kontronikParams.pole_number);
+                break;
+            case KON_PARAM_GEAR_RATIO:
+                value = newParams->gear_ratio;
+                changed = (newParams->gear_ratio != kontronikParams.gear_ratio);
+                break;
+            case KON_PARAM_BRAKE:
+                value = newParams->brake;
+                changed = (newParams->brake != kontronikParams.brake);
+                break;
+            case KON_PARAM_RPM_CTL:
+                value = newParams->rpm_ctl;
+                changed = (newParams->rpm_ctl != kontronikParams.rpm_ctl);
+                break;
+            case KON_PARAM_HOW_ADJ_MAX_RPM:
+                value = newParams->how_adj_max_rpm;
+                changed = (newParams->how_adj_max_rpm != kontronikParams.how_adj_max_rpm);
+                break;
+            case KON_PARAM_MAX_DISCHARGE:
+                value = newParams->max_discharge;
+                changed = (newParams->max_discharge != kontronikParams.max_discharge);
+                break;
+            case KON_PARAM_MIN_INPUT_VOLTAGE:
+                value = newParams->min_input_voltage;
+                changed = (newParams->min_input_voltage != kontronikParams.min_input_voltage);
+                break;
+            case KON_PARAM_MAX_MOTOR_CURRENT:
+                value = newParams->max_motor_current;
+                changed = (newParams->max_motor_current != kontronikParams.max_motor_current);
+                break;
+            case KON_PARAM_MAX_ESC_TEMP:
+                value = newParams->max_esc_temp;
+                changed = (newParams->max_esc_temp != kontronikParams.max_esc_temp);
+                break;
+            case KON_PARAM_MAX_BEC_TEMP:
+                value = newParams->max_bec_temp;
+                changed = (newParams->max_bec_temp != kontronikParams.max_bec_temp);
+                break;
+            case KON_PARAM_MAX_BEC_CURRENT:
+                value = newParams->max_bec_current;
+                changed = (newParams->max_bec_current != kontronikParams.max_bec_current);
+                break;
+        }
+
+        if (!changed)
+            continue;
+
+        uint8_t written = kontronikAppendUint(reqbuffer + idx, REQUEST_BUFFER_SIZE - idx, value);
+        if (written == 0)
+            return false;
+        idx += written;
+
+        if (idx + 1 >= REQUEST_BUFFER_SIZE)
+            return false;
+        reqbuffer[idx++] = ':';
+
+        written = kontronikAppendUint(reqbuffer + idx, REQUEST_BUFFER_SIZE - idx, kontronikRegMap[i].reg);
+        if (written == 0)
+            return false;
+        idx += written;
+
+        if (idx + 1 >= REQUEST_BUFFER_SIZE)
+            return false;
+        reqbuffer[idx++] = ';';
+    }
+
+    if (idx + 1 >= REQUEST_BUFFER_SIZE)
+        return false;
+    reqbuffer[idx++] = KON_ASCII_EOF;
+    reqLength = idx;
+    readIngoreBytes = reqLength;
+    serialWriteBuf(escSensorPort, reqbuffer, reqLength);
+    return true;
+}
+
+static bool kontronikParamCommit(uint8_t cmd)
+{
+    if (cmd != 0)
+        return false;
+
+    if (memcmp(paramPayload, paramUpdPayload, KON_PARAM_PAYLOAD_LEN) == 0)
+        return true;
+
+    kontronikParams_t newParams = kontronikParams;
+    const uint8_t *p = paramUpdPayload;
+
+    p++; // esc_signature
+    p++; // esc_command
+    p += KON_PARAM_ESC_STR_LEN; // esc_model
+    p += KON_PARAM_ESC_STR_LEN; // esc_version
+    p += KON_PARAM_ESC_STR_LEN; // firmware_version
+
+    newParams.bec_voltage = p[0] | (p[1] << 8); p += 2;
+    newParams.rotation = *p++;
+    newParams.fwd_bckwd = *p++;
+    newParams.flight_mode = *p++;
+    newParams.battery_type = *p++;
+    newParams.undervoltage_behavior = *p++;
+    newParams.undervoltage_cell = p[0] | (p[1] << 8); p += 2;
+    newParams.discharge_limiter_act = *p++;
+    newParams.discharge_limit = p[0] | (p[1] << 8); p += 2;
+    newParams.pole_number = *p++;
+    newParams.gear_ratio = p[0] | (p[1] << 8); p += 2;
+    newParams.brake = *p++;
+    newParams.rpm_ctl = *p++;
+    newParams.how_adj_max_rpm = *p++;
+    newParams.max_discharge = p[0] | (p[1] << 8); p += 2;
+    newParams.min_input_voltage = p[0] | (p[1] << 8); p += 2;
+    newParams.max_motor_current = p[0] | (p[1] << 8); p += 2;
+    newParams.max_esc_temp = p[0] | (p[1] << 8); p += 2;
+    newParams.max_bec_temp = p[0] | (p[1] << 8); p += 2;
+    newParams.max_bec_current = p[0] | (p[1] << 8); p += 2;
+
+    kontronikConfigRequested = true;
+    if (!kontronikWriteParamPairs(&newParams))
+        return false;
+
+    kontronikParams = newParams;
+    kontronikBuildParamPayload();
+
+    return true;
+}
+
 static bool processKontronikTelemetryStream(uint8_t dataByte)
 {
     totalByteCount++;
@@ -830,55 +1377,77 @@ static bool processKontronikTelemetryStream(uint8_t dataByte)
     buffer[readBytes++] = dataByte;
 
     if (readBytes == 1) {
-        if (dataByte != 0x4B)
+        if (dataByte == KON_ASCII_SOF) {
+            kontronikFrameType = KON_FRAME_ASCII;
+        }
+        else if (dataByte == 0x4B) {
+            kontronikFrameType = KON_FRAME_KODL;
+        }
+        else {
             frameSyncError();
+        }
     }
     else if (readBytes == 2) {
-        if (dataByte != 0x4F)
-            frameSyncError();
+        if (kontronikFrameType == KON_FRAME_KODL) {
+            if (dataByte != 0x4F)
+                frameSyncError();
+        }
     }
     else if (readBytes == 3) {
-        if (dataByte != 0x44)
-            frameSyncError();
+        if (kontronikFrameType == KON_FRAME_KODL) {
+            if (dataByte != 0x44)
+                frameSyncError();
+        }
     }
     else if (readBytes == 4) {
-        if (dataByte != 0x4C)
-            frameSyncError();
-        else
-            syncCount++;
-    }
-    else if (readBytes == kontronikPacketLength) {
-        readBytes = 0;
-        return true;
-    }
-    else if (kontronikPacketLength == 0 && readBytes == KON_FRAME_LENGTH_LEGACY) {
-        // auto detect legacy 38 byte packet...
-        uint32_t crc = kontronikDecodeCRC(KON_FRAME_LENGTH_LEGACY - KON_CRC_LENGTH);
-        if (calculateCRC32(buffer, KON_FRAME_LENGTH_LEGACY - 2 - KON_CRC_LENGTH) == crc) {
-            // ...w/ 32 byte payload (2 bytes excluded)
-            kontronikPacketLength = KON_FRAME_LENGTH_LEGACY;
-            kontronikCrcExclude = 2;
-            readBytes = 0;
-            return true;
+        if (kontronikFrameType == KON_FRAME_KODL) {
+            if (dataByte != 0x4C)
+                frameSyncError();
+            else
+                syncCount++;
         }
-        else if (calculateCRC32(buffer, KON_FRAME_LENGTH_LEGACY - KON_CRC_LENGTH) == crc) {
-            // ...w/ 34 byte payload
-            kontronikPacketLength = KON_FRAME_LENGTH_LEGACY;
-            kontronikCrcExclude = 0;
+    }
+    else if (kontronikFrameType == KON_FRAME_ASCII) {
+        if (dataByte == KON_ASCII_EOF) {
+            kontronikAsciiFrameLength = readBytes;
             readBytes = 0;
             return true;
         }
     }
-    else if (kontronikPacketLength == 0 && readBytes == KON_FRAME_LENGTH) {
-        // auto detect 40 byte packet...
-        uint32_t crc = kontronikDecodeCRC(KON_FRAME_LENGTH - KON_CRC_LENGTH);
-        if (calculateCRC32(buffer, KON_FRAME_LENGTH - KON_CRC_LENGTH) == crc) {
-            // ...w/ 36 byte payload
-            kontronikPacketLength = KON_FRAME_LENGTH;
-            kontronikCrcExclude = 0;
+    else if (kontronikFrameType == KON_FRAME_KODL) {
+        if (readBytes == kontronikPacketLength) {
+            readBytes = 0;
+            return true;
         }
-        readBytes = 0;
-        return true;
+        else if (kontronikPacketLength == 0 && readBytes == KON_FRAME_LENGTH_LEGACY) {
+            // auto detect legacy 38 byte packet...
+            uint32_t crc = kontronikDecodeCRC(KON_FRAME_LENGTH_LEGACY - KON_CRC_LENGTH);
+            if (calculateCRC32(buffer, KON_FRAME_LENGTH_LEGACY - 2 - KON_CRC_LENGTH) == crc) {
+                // ...w/ 32 byte payload (2 bytes excluded)
+                kontronikPacketLength = KON_FRAME_LENGTH_LEGACY;
+                kontronikCrcExclude = 2;
+                readBytes = 0;
+                return true;
+            }
+            else if (calculateCRC32(buffer, KON_FRAME_LENGTH_LEGACY - KON_CRC_LENGTH) == crc) {
+                // ...w/ 34 byte payload
+                kontronikPacketLength = KON_FRAME_LENGTH_LEGACY;
+                kontronikCrcExclude = 0;
+                readBytes = 0;
+                return true;
+            }
+        }
+        else if (kontronikPacketLength == 0 && readBytes == KON_FRAME_LENGTH) {
+            // auto detect 40 byte packet...
+            uint32_t crc = kontronikDecodeCRC(KON_FRAME_LENGTH - KON_CRC_LENGTH);
+            if (calculateCRC32(buffer, KON_FRAME_LENGTH - KON_CRC_LENGTH) == crc) {
+                // ...w/ 36 byte payload
+                kontronikPacketLength = KON_FRAME_LENGTH;
+                kontronikCrcExclude = 0;
+            }
+            readBytes = 0;
+            return true;
+        }
     }
 
     return false;
@@ -886,57 +1455,76 @@ static bool processKontronikTelemetryStream(uint8_t dataByte)
 
 static void kontronikSensorProcess(timeUs_t currentTimeUs)
 {
+    const timeMs_t currentTimeMs = currentTimeUs / 1000;
+
+    kontronikMaybeSendHandshake(currentTimeMs);
+
     // check for any available bytes in the rx buffer
     while (serialRxBytesWaiting(escSensorPort)) {
+        if (readIngoreBytes > 0) {
+            serialRead(escSensorPort);
+            readIngoreBytes--;
+            continue;
+        }
         if (processKontronikTelemetryStream(serialRead(escSensorPort))) {
-            uint32_t crc = kontronikDecodeCRC(kontronikPacketLength - KON_CRC_LENGTH);
-            if (calculateCRC32(buffer, kontronikPacketLength - kontronikCrcExclude - KON_CRC_LENGTH) == crc) {
-                uint32_t rpm = buffer[7] << 24 | buffer[6] << 16 | buffer[5] << 8 | buffer[4];
-                int16_t  throttle = (int8_t)buffer[24];
-                uint16_t pwm = buffer[23] << 8 | buffer[22];
-                uint16_t voltage = buffer[9] << 8 | buffer[8];
-                uint16_t current = buffer[11] << 8 | buffer[10];
-                uint16_t capacity = buffer[17] << 8 | buffer[16];
-                int16_t  tempFET = (int8_t)buffer[26];
-                int16_t  tempBEC = (int8_t)buffer[27];
-                uint16_t currBEC = buffer[19] << 8 | buffer[18];
-                uint16_t voltBEC = buffer[21] << 8 | buffer[20];
-                uint32_t status = buffer[31] << 24 | buffer[30] << 16 | buffer[29] << 8 | buffer[28];
-
-                escSensorData[0].id = ESC_SIG_KON;
-                escSensorData[0].age = 0;
-                escSensorData[0].erpm = rpm;
-                escSensorData[0].throttle = (throttle + 100) * 5;
-                escSensorData[0].pwm = pwm * 10;
-                escSensorData[0].voltage = applyVoltageCorrection(voltage * 10);
-                escSensorData[0].current = applyCurrentCorrection(current * 100);
-                escSensorData[0].consumption = applyConsumptionCorrection(capacity);
-                escSensorData[0].temperature = tempFET * 10;
-                escSensorData[0].temperature2 = tempBEC * 10;
-                escSensorData[0].bec_voltage = voltBEC;
-                escSensorData[0].bec_current = currBEC;
-                escSensorData[0].status = status;
-
-                DEBUG(ESC_SENSOR, DEBUG_ESC_1_RPM, rpm);
-                DEBUG(ESC_SENSOR, DEBUG_ESC_1_TEMP, tempFET * 10);
-                DEBUG(ESC_SENSOR, DEBUG_ESC_1_VOLTAGE, voltage);
-                DEBUG(ESC_SENSOR, DEBUG_ESC_1_CURRENT, current * 10);
-
-                DEBUG(ESC_SENSOR_DATA, DEBUG_DATA_RPM, rpm);
-                DEBUG(ESC_SENSOR_DATA, DEBUG_DATA_PWM, pwm);
-                DEBUG(ESC_SENSOR_DATA, DEBUG_DATA_TEMP, tempFET);
-                DEBUG(ESC_SENSOR_DATA, DEBUG_DATA_VOLTAGE, voltage);
-                DEBUG(ESC_SENSOR_DATA, DEBUG_DATA_CURRENT, current);
-                DEBUG(ESC_SENSOR_DATA, DEBUG_DATA_CAPACITY, capacity);
-                DEBUG(ESC_SENSOR_DATA, DEBUG_DATA_EXTRA, tempBEC);
-                DEBUG(ESC_SENSOR_DATA, DEBUG_DATA_AGE, 0);
-
-                dataUpdateUs = currentTimeUs;
-
-                totalFrameCount++;
+            if (kontronikFrameType == KON_FRAME_ASCII) {
+                if (kontronikDecodeAsciiFrame()) {
+                    totalFrameCount++;
+                }
+                else {
+                    totalCrcErrorCount++;
+                }
             }
-            else {
-                totalCrcErrorCount++;
+            else if (kontronikFrameType == KON_FRAME_KODL) {
+                uint32_t crc = kontronikDecodeCRC(kontronikPacketLength - KON_CRC_LENGTH);
+                if (calculateCRC32(buffer, kontronikPacketLength - kontronikCrcExclude - KON_CRC_LENGTH) == crc) {
+                    uint32_t rpm = buffer[7] << 24 | buffer[6] << 16 | buffer[5] << 8 | buffer[4];
+                    int16_t  throttle = (int8_t)buffer[24];
+                    uint16_t pwm = buffer[23] << 8 | buffer[22];
+                    uint16_t voltage = buffer[9] << 8 | buffer[8];
+                    uint16_t current = buffer[11] << 8 | buffer[10];
+                    uint16_t capacity = buffer[17] << 8 | buffer[16];
+                    int16_t  tempFET = (int8_t)buffer[26];
+                    int16_t  tempBEC = (int8_t)buffer[27];
+                    uint16_t currBEC = buffer[19] << 8 | buffer[18];
+                    uint16_t voltBEC = buffer[21] << 8 | buffer[20];
+                    uint32_t status = buffer[31] << 24 | buffer[30] << 16 | buffer[29] << 8 | buffer[28];
+
+                    escSensorData[0].id = ESC_SIG_KON;
+                    escSensorData[0].age = 0;
+                    escSensorData[0].erpm = rpm;
+                    escSensorData[0].throttle = (throttle + 100) * 5;
+                    escSensorData[0].pwm = pwm * 10;
+                    escSensorData[0].voltage = applyVoltageCorrection(voltage * 10);
+                    escSensorData[0].current = applyCurrentCorrection(current * 100);
+                    escSensorData[0].consumption = applyConsumptionCorrection(capacity);
+                    escSensorData[0].temperature = tempFET * 10;
+                    escSensorData[0].temperature2 = tempBEC * 10;
+                    escSensorData[0].bec_voltage = voltBEC;
+                    escSensorData[0].bec_current = currBEC;
+                    escSensorData[0].status = status;
+
+                    DEBUG(ESC_SENSOR, DEBUG_ESC_1_RPM, rpm);
+                    DEBUG(ESC_SENSOR, DEBUG_ESC_1_TEMP, tempFET * 10);
+                    DEBUG(ESC_SENSOR, DEBUG_ESC_1_VOLTAGE, voltage);
+                    DEBUG(ESC_SENSOR, DEBUG_ESC_1_CURRENT, current * 10);
+
+                    DEBUG(ESC_SENSOR_DATA, DEBUG_DATA_RPM, rpm);
+                    DEBUG(ESC_SENSOR_DATA, DEBUG_DATA_PWM, pwm);
+                    DEBUG(ESC_SENSOR_DATA, DEBUG_DATA_TEMP, tempFET);
+                    DEBUG(ESC_SENSOR_DATA, DEBUG_DATA_VOLTAGE, voltage);
+                    DEBUG(ESC_SENSOR_DATA, DEBUG_DATA_CURRENT, current);
+                    DEBUG(ESC_SENSOR_DATA, DEBUG_DATA_CAPACITY, capacity);
+                    DEBUG(ESC_SENSOR_DATA, DEBUG_DATA_EXTRA, tempBEC);
+                    DEBUG(ESC_SENSOR_DATA, DEBUG_DATA_AGE, 0);
+
+                    dataUpdateUs = currentTimeUs;
+
+                    totalFrameCount++;
+                }
+                else {
+                    totalCrcErrorCount++;
+                }
             }
         }
     }
@@ -1552,7 +2140,7 @@ static bool flyDecode(timeUs_t currentTimeUs)
     UNUSED(currentTimeUs);
 
     // paranoid buffer access
-    const uint8_t len = FLY_MIN_FRAME_LENGTH + buffer[3];
+    const uint16_t len = FLY_MIN_FRAME_LENGTH + buffer[3];
     if (len > TELEMETRY_BUFFER_SIZE)
         return false;
 
@@ -2812,7 +3400,7 @@ static const OpenYGEHeader_t *oygeGetHeaderWithCrcCheck()
 {
     // get header (w/ paranoid buffer access)
     const OpenYGEHeader_t *hdr = (OpenYGEHeader_t*)buffer;
-    const uint8_t len = hdr->frame_length;
+    const uint16_t len = hdr->frame_length;
     if (len < OPENYGE_MIN_FRAME_LENGTH || len > TELEMETRY_BUFFER_SIZE)
         return NULL;
 
@@ -3789,6 +4377,9 @@ bool INIT_CODE escSensorInit(void)
         case ESC_SENSOR_PROTO_KONTRONIK:
             baudrate = 115200;
             options |= SERIAL_PARITY_EVEN;
+            escSig = ESC_SIG_KON;
+            kontronikClearParams();
+            paramCommit = escHalfDuplex ? kontronikParamCommit : NULL;
             break;
         case ESC_SENSOR_PROTO_OMPHOBBY:
             callback = xdflySensorInit(ESC_SIG_OMP);
@@ -3838,6 +4429,9 @@ bool INIT_CODE escSensorInit(void)
 uint8_t escGetParamBufferLength(void)
 {
     paramMspActive = true;
+    if (escSig == ESC_SIG_KON) {
+        kontronikConfigRequested = true;
+    }
     return paramPayloadLength != 0 ? PARAM_HEADER_SIZE + paramPayloadLength : 0;
 }
 
