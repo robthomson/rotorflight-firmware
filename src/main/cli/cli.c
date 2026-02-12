@@ -6187,6 +6187,51 @@ static void cliDshotTelemetryInfo(const char *cmdName, char *cmdline)
 }
 #endif
 
+#ifdef USE_TELEMETRY_IBUS
+static void cliIbus2TelemetryInfo(const char *cmdName, char *cmdline)
+{
+    UNUSED(cmdName);
+    UNUSED(cmdline);
+
+    extern uint32_t ibus2DbgBytesSeen;
+    extern uint32_t ibus2DbgNonZeroBytes;
+    extern uint32_t ibus2DbgCrcOk;
+    extern uint32_t ibus2DbgCmdGetType;
+    extern uint32_t ibus2DbgTxCount;
+    extern uint32_t ibus2DbgCmdGetValue;
+    extern uint32_t ibus2DbgCmdGetParam;
+    extern uint32_t ibus2DbgCmdSetParam;
+    extern uint8_t ibus2DbgLastHeaderRaw;
+    extern uint8_t ibus2DbgLastPacketType;
+    extern uint8_t ibus2DbgLastCommandCode;
+
+    cliPrintLinef("IBUS2 bytes: %u", ibus2DbgBytesSeen);
+    cliPrintLinef("IBUS2 nonzero bytes: %u", ibus2DbgNonZeroBytes);
+    cliPrintLinef("IBUS2 crc ok: %u", ibus2DbgCrcOk);
+    cliPrintLinef("IBUS2 get type: %u", ibus2DbgCmdGetType);
+    cliPrintLinef("IBUS2 get value: %u", ibus2DbgCmdGetValue);
+    cliPrintLinef("IBUS2 get param: %u", ibus2DbgCmdGetParam);
+    cliPrintLinef("IBUS2 set param: %u", ibus2DbgCmdSetParam);
+    cliPrintLinef("IBUS2 tx: %u", ibus2DbgTxCount);
+    cliPrintLinef("IBUS2 last hdr raw: 0x%02X", ibus2DbgLastHeaderRaw);
+    cliPrintLinef("IBUS2 last pkt/cmd: %u/%u", ibus2DbgLastPacketType, ibus2DbgLastCommandCode);
+}
+#endif
+
+#ifdef USE_TELEMETRY_IBUS
+static void cliIbus2TelemetryFrame(const char *cmdName, char *cmdline)
+{
+    UNUSED(cmdName);
+    UNUSED(cmdline);
+
+    extern uint8_t ibus2DbgLastFrame[21];
+    cliPrintLine("IBUS2 last frame:");
+    for (int i = 0; i < 21; i++) {
+        cliPrintf("%02X ", ibus2DbgLastFrame[i]);
+    }
+    cliPrintLinefeed();
+}
+#endif
 static void printConfig(const char *cmdName, char *cmdline, bool doDiff)
 {
     dumpFlags_t dumpMask = DUMP_MASTER;
@@ -6490,6 +6535,10 @@ const clicmd_t cmdTable[] = {
 #endif
 #ifdef USE_DSHOT_TELEMETRY
     CLI_COMMAND_DEF("dshot_telemetry_info", "display dshot telemetry info and stats", NULL, cliDshotTelemetryInfo),
+#endif
+#ifdef USE_TELEMETRY_IBUS
+    CLI_COMMAND_DEF("ibus2_telemetry_info", "display IBUS2 telemetry debug counters", NULL, cliIbus2TelemetryInfo),
+    CLI_COMMAND_DEF("ibus2_telemetry_frame", "display last IBUS2 telemetry frame", NULL, cliIbus2TelemetryFrame),
 #endif
 #ifdef USE_DSHOT
     CLI_COMMAND_DEF("dshotprog", "program DShot ESC(s)", "<index> <command>+", cliDshotProg),

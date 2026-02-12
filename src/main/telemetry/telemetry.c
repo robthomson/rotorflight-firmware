@@ -58,6 +58,7 @@
 #include "telemetry/ghst.h"
 #include "telemetry/srxl.h"
 #include "telemetry/ibus.h"
+#include "telemetry/ibus2.h"
 #include "telemetry/sbus2.h"
 #include "telemetry/msp_shared.h"
 
@@ -92,14 +93,15 @@ bool telemetryCheckRxPortShared(const serialPortConfig_t *portConfig, const Seri
          serialrxProvider == SERIALRX_XBUS_MODE_A ||
          serialrxProvider == SERIALRX_XBUS_MODE_B ||
          serialrxProvider == SERIALRX_XBUS_MODE_B_RJ01 ||
-         serialrxProvider == SERIALRX_IBUS)) {
+         serialrxProvider == SERIALRX_IBUS ||
+         serialrxProvider == SERIALRX_IBUS2)) {
 
         return true;
     }
 #ifdef USE_TELEMETRY_IBUS
     if (portConfig->functionMask & FUNCTION_TELEMETRY_IBUS &&
         portConfig->functionMask & FUNCTION_RX_SERIAL &&
-        serialrxProvider == SERIALRX_IBUS) {
+        (serialrxProvider == SERIALRX_IBUS || serialrxProvider == SERIALRX_IBUS2)) {
         // IBUS serial RX & telemetry
         return true;
     }
@@ -139,6 +141,7 @@ void telemetryProcess(timeUs_t currentTime)
 #endif
 #ifdef USE_TELEMETRY_IBUS
     handleIbusTelemetry();
+    handleIbus2Telemetry();
 #endif
 #ifdef USE_TELEMETRY_SBUS2
     handleSbus2Telemetry(currentTime);
@@ -176,6 +179,7 @@ void telemetryCheckState(void)
 #endif
 #ifdef USE_TELEMETRY_IBUS
     checkIbusTelemetryState();
+    checkIbus2TelemetryState();
 #endif
 #ifdef USE_TELEMETRY_SBUS2
     checkSbus2TelemetryState();
@@ -215,6 +219,7 @@ void INIT_CODE telemetryInit(void)
 #endif
 #ifdef USE_TELEMETRY_IBUS
     initIbusTelemetry();
+    initIbus2Telemetry();
 #endif
 #ifdef USE_TELEMETRY_SBUS2
     initSbus2Telemetry();

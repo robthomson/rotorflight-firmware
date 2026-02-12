@@ -1,0 +1,446 @@
+IBUS2 communication protocol
+
+Date of formulation: 2020-04-
+20
+Version: V2.0
+Document Number:
+Shenzhen Fusi Technology Co.,
+Ltd.
+FLYSKY Technology Co.,Ltd
+16th Floor, Huafeng Building, No. 6006 Shennan Avenue, Futian District, Shenzhen
+(Postcode 518000)
+16/F, huafeng building, 6006 shennan Road, Shenzhen, P.R. China
+Fax +86 755 8328 0770 Tel +86 755 8328 2965 ext. 8866
+Shenzhen Fusi Technology Co., Ltd. reserves all copyrights to this document.
+2
+Disclaimer
+Shenzhen Fusi Technology Co., Ltd. reserves the right to make changes to
+product functions or designs for the purpose of improving product
+performance. Shenzhen Fusi Technology Co., Ltd. assumes no liability for any
+consequences arising from the use of this product.
+
+
+
+
+
+
+
+
+
+Change history
+Revision
+Date Version Revisions Reviser Approver
+2020-04-20 V1.0 New
+2020-04-28 V1.1 Add a structure definition for
+the protocol.
+2020-06-18 V1.2
+The device returns data
+packets with added PID and
+VID to distinguish the same
+type of device from different
+manufacturers.
+2020-07-01 V1.3
+1. To ensure
+compatibility with the
+IBUS2 library, only the
+VID and PID
+parameters have
+been added to the
+return parameters of
+ResponseGetParam
+and
+ResponseGetValue.
+2. Modify the length of
+the first frame data to
+35 and add a
+description;
+3. The first byte of the
+sensor data is a
+sequence number to
+facilitate packet
+transmission when the
+sensor data exceeds
+3
+13 bytes;
+4. Added channel
+parsing source code.
+2020-11-10 V1.4
+1. Added specific values for
+the device return type and
+modified the description of
+Valuelength.
+2020-12-02 V2.0
+1. Modify the first frame
+data to a non-fixed
+length;
+2. Remove the PID and
+VID from
+ResponseGetParam
+and only add them to
+ResponseGetValue;
+3. Delete the source
+code of the channel
+parser.
+2020-12-21 V2.1 1. Modify timing sequence,
+2022-08-04 V2.2
+Modify the description of the
+ParamType in the device's
+reply to the host in the third
+frame of data.
+2022-09-19 V2.3
+Modify the maximum length
+of the text description when
+the device returns sensor
+data.
+2022-11-04
+Modify the maximum length
+of ValueLength in the third
+frame, and modify the VID
+and PID in the general
+structure.
+2022-12-16 Add runaway protection data
+description
+2023-05-10 Add light blue runaway
+protection instructions
+2023-07-18 Modify timing
+2024-01-30
+Adding a pull-up resistor to
+the communication data
+cable for an external device
+requires connection of a pullup resistor.
+Table of contents
+一、Communication rules
+1
+1. Communication Agreement....................................................................1
+2. Communication rules description ...........................................................1
+2.1 Host transmits channel value...............................................................1
+2.2 Host sends commands ........................................................................1
+2.3 Equipment response data....................................................................1
+2.4 Other Notes ........................................................................................1
+二、 Communication format........................................................................2
+1. Frame format..........................................................................................2
+三、Protocol content
+2
+1. First frame protocol content ......................................................................2
+2. Second frame protocol content.................................................................3
+3. Third frame protocol content .....................................................................5
+四、Function Usage Instructions
+7
+1. Enumeration .............................................................................................7
+2. Normal Communication ............................................................................7
+五、............................................................................................................................................. Appendix
+7
+1. Host-to-device sensor data format .........................................................7
+2. Reserved indicates.................................................................................7
+3. Sensor data packet description..............................................................7
+4. Data frame timing...................................................................................7
+5. Device return type..................................................................................8
+6. Runaway protection data description .....................................................8
+7. Hardware ...............................................................................................8
+1
+一、 Communication rules
+1. Communication Agreement
+This paper defines the communication method between the host
+(receiver or IBUS2 HUB, hereinafter referred to as the host) and the
+device. The communication relationship between the host and the device
+is as follows:
+(1) The host sends a command, and the device receives the command and
+replies with data.
+2. Communication rules description
+2.1 Host transmits channel value
+The host will send the channel value in the first frame of each
+IBUS2 cycle.
+2.2 Host sends commands
+The host sends commands in the second frame of data in each
+IBUS2 cycle.
+2.3 Equipment response data
+After receiving the second frame of data, the device will reply
+with data according to the commands in the second frame.
+2.4 Other Notes
+(1)The second and third frame data are optional.
+2
+(2)The device cannot actively send data to force the IBUS2 bus to be
+occupied. The device can only switch to output mode and send data
+after receiving the second frame of data; otherwise, the device
+can only remain in input mode and wait for the host to send data.
+二、 Communication format
+ Communication method: UART
+ Baud rate: 1.5 Mbit/s
+ Data bits: 8 bits
+ Stop bits: 1 bit
+ Parity check: None
+1. Frame format
+1.1 First frame format:
+1.2 Second frame format:
+1.3 Third frame format:
+Note: The length of each frame is fixed, so if the length is insufficient, it is
+padded with 0;
+三、 Protocol content
+1. First frame protocol content
+typedef __packed struct
+{
+unsigned char PacketType:2;
+unsigned char PacketSubtype:4;
+unsigned char SynchronizationLost:1;
+unsigned char FailsafeTriggered:1;
+unsigned char Length;
+unsigned char AddressLevel1:3;
+unsigned char AddressLevel2:3;
+unsigned char Reserved2:2;
+unsigned char Channels[32];
+PacketType Sub
+type
+Synchroniz
+ation Lost
+Failsafe
+Triggered
+Length Address
+Level1
+Address
+Level2
+Reserved Channels CRC
+PacketType CommandCode ParamType Param Length ParamValue Reserved CRC
+PacketType CommandCode ParamType Param Length ParamValue Reserved VID PID CRC
+3
+unsigned char CRC8;
+} sIB2_Channels;
+(1). The length of the first frame is Length (maximum not exceeding 37 bytes).
+(2). a. PacketType is fixed at 0;
+b. PacketSubtype:
+0 Compressed channel data;
+1 Channel data type; (can be understood as the decompression
+password of compressed channel data)
+2 Compressed runaway protection data; (Based on the data value after
+decompression by the function SES_UnpackChannels, -32767: indicates no
+output; -32768: indicates keeping the last output; other values indicate output
+based on this data)
+c. SynchronizationLost:
+0 Receiver and transmitter communicate normally;
+1 Receiver and transmitter lose synchronization;
+d. FailsafeTriggered:
+0 Receiver and transmitter communicate normally;
+1 Receiver and transmitter disconnect;
+e. Length
+ The actual length of the data in this frame (maximum not exceeding
+37 bytes).
+f. AddressLevel1(AddressLevel2):
+ The receiving address of the second frame command data (the
+device does not need to pay attention to it);
+ g. Reserved2: Default is 0;
+ h. Channels: Real-time channel data;
+ i. CRC8: Data check data used to ensure data integrity (polynomial
+0x125);
+2. Second frame protocol content
+typedef __packed struct
+{
+unsigned char PacketType:2;
+unsigned char CommandCode:6;
+unsigned short Data[19];
+unsigned char CRC8;
+};
+(1). The length of the second frame data is fixed at 21 bytes;
+(2). a. PacketType is fixed at 1;
+ b. CommandCode:
+ 0 The reset command issued by the host is generally not needed by
+the device;
+1 The host obtains the device attributes (including the device type
+and the device's own data). The specific content is as follows:
+typedef __packed struct
+{
+ unsigned char PacketType:2;
+ unsigned char CommandCode:6;
+ unsigned char Reserved[19];
+4
+ unsigned char CRC8;
+} sIB2_CommandGetType;
+2. The host obtains device data (the data returned by the device will
+be received as sensor data and returned to the transmitter (such as
+voltage, current, speed, etc.)), without parameters. The specific content
+is as follows:
+typedef __packed struct
+{
+ unsigned char PacketType:2;
+ unsigned char CommandCode:6;
+ unsigned char Reserved[19];
+ unsigned char CRC8;
+}
+3. The host obtains device parameters. The specific content is as
+follows:
+typedef __packed struct
+{
+ unsigned char PacketType:2;
+ unsigned char CommandCode:6;
+ unsigned short ParamType;
+ unsigned char Reserved[17];
+ unsigned char CRC8;
+}
+Note: The parameter type is an unsigned short constant defined by
+the device and the transmitter.
+ 4. The host sets device parameters. The specific content is as
+follows:
+typedef __packed struct
+{
+ unsigned char PacketType:2;
+ unsigned char CommandCode:6;
+ unsigned short ParamType;
+ unsigned char ParamLength;
+ unsigned char ParamValue[16];
+ unsigned char CRC8;
+}
+Note: The parameter type is a custom unsigned short constant
+defined by the device and transmitter; ParamLength and
+ParamValue[16] are also custom parameters defined by the device
+and transmitter; some special devices, such as flight controllers,
+need to obtain the signal strength RSSI and other sensor data of
+the receiver. The host will also send the sensor data to the device
+through this command. At this time, ParamType is 0xC000, and the
+data format is shown in 5.1;
+c. CRC8: The data check data is used to ensure the integrity of the data
+(polynomial 0x125);
+5
+3. Third frame protocol content
+typedef __packed struct
+{
+unsigned char PacketType:2;
+unsigned char CommandCode:6;
+unsigned short Data[19];
+unsigned char CRC8;
+};
+(1). The length of the third frame data is fixed at 21 bytes;
+(2). a. PacketType is fixed at 2;
+ b. CommandCode:
+1 The device replies to the host with the command to get the device
+type, and the device returns its own type and the data required by the
+device itself. The specific content is as follows:
+typedef __packed struct
+{
+ unsigned char PacketType:2;
+ unsigned char CommandCode:6;
+ unsigned char Type;
+ unsigned char ValueLength; // From 1 to 16
+ unsigned char ChannelsTypes:1;
+ unsigned char Failsafe:1;
+ unsigned char ReceiverInternalSensors:1;
+ unsigned char Reserved:5;
+ unsigned char Reserved[16];
+ unsigned char CRC8;
+}
+Note: Type: The device type is provided by the host (see Appendix
+5);
+ValueLength: The maximum length of all sensors is 16 bytes (it
+is recommended to directly write the maximum value of 16 (high
+frequency limits only allow a maximum of 16 bytes));
+ChannelsTypes: If 1, the device needs channel type data,
+otherwise not;
+Failsafe: If 1, the device needs failsafe data, otherwise not;
+When 1, the ibus2 host will send failsafe data to the ibus2 device
+during the first connection, or the ibus2 host will send failsafe data to
+the ibus2 device again after the user modifies the failsafe data on the
+transmitter. Refer to Appendix 6 for the specific value of failsafe data.
+ReceiverInternalSensorsr: If 1, the device needs internal sensor
+data from the receiver, otherwise not. If this bit is 1, the data in
+Appendix 1 will be received through sIB2_CommandSetParam;
+2. Device reply to host: Get device data command (the data returned
+by the device will be received as sensor data and returned to the
+transmitter (e.g., voltage, current, speed, etc.)). The maximum length is
+14 (the specific content of this data is defined by the transmitter and the
+device). The specific content is as follows:
+typedef __packed struct
+6
+{
+ unsigned char PacketType:2;
+ unsigned char CommandCode:6;
+ unsigned char Value[14];
+ unsigned char VID;
+ unsigned char PID;
+ unsigned char Reserved[3];
+ unsigned char CRC8;
+}
+Note: The specific content of the returned data, such as voltage,
+current, speed, etc., is customized by the device and the transmitter,
+with a maximum length not exceeding 14 bytes;
+3 The device replies to the host with the command to obtain the
+device parameters, and the device returns the specific value of the
+parameter (the specific content of this data is customized by the
+transmitter and the device). The specific content is as follows:
+typedef __packed struct
+{
+unsigned char PacketType:2;
+unsigned char CommandCode:6;
+unsigned short ParamType;
+unsigned char ParamLength;
+unsigned char ParamValue[16];
+unsigned char CRC8;
+}
+Note: ParamType is the ParamType of the second frame read
+parameter command; ParamLength and ParamValue[16] are also
+specific parameters defined by the device and transmitter;
+4 The device replies to the host to set the device parameters,
+returning whether the setting is successful or failed;
+typedef __packed struct
+{
+ unsigned char PacketType:2;
+ unsigned char CommandCode:6;
+ unsigned short ParamType;
+ unsigned char ParamLength; // 0 if parameter not supported
+ unsigned char Reserved[16];
+ unsigned char CRC8;
+}
+Note: ParamType is the ParamType of the command setting
+parameters in the second frame. If ParamLength is 0, it means that the
+parameter setting is not supported; other values indicate that the
+setting is successful.
+ c. CRC8: Data checksum used to ensure data integrity (polynomial
+0x125);
+7
+四、 Function Usage Instructions
+1. Enumeration
+1. After the IBUS2 power-on bus starts working, the host will send the channel
+value in the first frame of each IBUS2 cycle, and the enumeration (i.e., the
+command to obtain the device type) in the second frame of data to the
+devices connected to the IBUS2 bus. (The device must ensure that it does not
+switch to output mode until it receives the second frame of command data,
+and immediately switch to input mode after replying to the host to wait for the
+data of the next IBUS2 cycle). Only when the host successfully enumerates
+the device will the host actively set the device parameters, read the device
+parameters, and read the device sensor data.
+2. Normal Communication
+1. After the device is successfully enumerated, it will receive the second frame
+of command to set or read parameters.
+五、 Appendix
+1. Host-to-device sensor data format
+Typedef __packed struct
+{
+ unsigned short InternalVoltage; // In 10mV units
+ unsigned char SignalStrength; // From 0 to 100
+ unsigned short RSSI; // In -0.25dBm units
+ unsigned short BackgroundNoise; // In -0.25dBm units
+ signed short SNR; // From 0 to 40dBm in 0.25dBm units
+} sIB2PA_ReceiverInternalSensors; (This data is ignored for servos and
+ESCs; only the flight controller uses it.)
+2. Reserved indicates
+that data structures in the protocol with Reserved should be assigned a value
+of 0
+3. Sensor data packet description
+The first byte of the sensor data replied by the device is the 13 bytes of sensor
+data following the sequence number. If it is greater than 13 bytes, the
+sequence number is incremented by one, and the following bytes are the
+remaining sensor data
+4. Data frame timing
+The interval between the first and second data packets: 125 +/- 25us
+8
+The length of the second data packet: 140us
+Interval between the second and third data packets: 160 +/- 25us
+Length of the third data packet: 140us
+5. Device return type
+typedef enum
+{
+IBDT_DIGITAL_SERVO = 0xF8,
+}
+6. Runaway protection data description
+No output -32767 (0x8001);
+Keep last output -32768 (0x8000);
+Custom values: -16384~16384 (0xC000~0x4000);
+The above values are calculated by the SES_UnpackChannels function
+7. Hardware
+Ibus2 device communication data requires a 10K-60K pull-up resistor

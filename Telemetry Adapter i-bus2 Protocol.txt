@@ -1,0 +1,469 @@
+Telemetry Adapter i-bus2 Protocol
+Definition
+1. Explanation
+This protocol is based on the i-bus2 basic protocol:
+For the i-bus2 general protocol, please refer to the i-bus2 protocol document.
+The following is the protocol breakdown definition of the telemetry adapter.
+The telemetry adapter is the slave device, and will be referred to as the slave device below.
+The receiver is referred to as the master device.
+2. Master command
+data format
+typedef __packed struct
+{
+unsigned char PacketType:2;
+unsigned char CommandCode:6;
+unsigned char Data[19];
+unsigned char CRC8;
+};
+CommandCode is the command code, and will be explained according to the command code
+below
+2.1 CommandCode is 3
+The master device obtains the device parameters.
+Data format
+typedef __packed struct
+{
+unsigned char PacketType:2;
+unsigned char CommandCode:6;
+unsigned short ParamType
+unsigned char Reserved[17];
+unsigned char CRC8;
+} sIB2_CommandGetParam;
+For example: Inquire whether the slave device supports advanced functions. The function
+code for advanced functions is 0x01
+The data protocol is: (see the appendix for the specific protocol encoding)
+0x01(2b) 0x03(6b) 0x01 0X00 0X00 0X00 0X00 …… CRC
+2.2 CommandCode is 4
+The host sets the device parameters.
+Data format
+typedef __packed struct
+{
+unsigned char PacketType:2;
+unsigned char CommandCode:6;
+unsigned short ParamType;
+unsigned char ParamLength;
+unsigned char ParamValue[16];
+unsigned char CRC8;
+} sIB2_CommandSetParam;
+For example: Set the slave's working protocol number to protocol number 5 (see appendix
+for specific protocol codes)
+The data protocol is:
+0x01(2b) 0x04(6b) 0x03 0X00 0X01 0X05 0X00 …… CRC
+2.3 CommandCode is for other cases
+Other cases are the standard i-bus2 protocol part, which will not be elaborated on.
+3. Slave command
+data format
+typedef __packed struct
+{
+unsigned char PacketType:2;
+unsigned char CommandCode:6;
+unsigned short Data[19];
+unsigned char CRC8;
+};
+CommandCode is the command code. The following explanation is based on the command
+code
+3.1 When CommandCode is 3
+the device replies to the host with the command to obtain device parameters, and the device
+returns the specific value of the parameter.
+Data format
+typedef __packed struct
+{
+unsigned char PacketType:2;
+unsigned char CommandCode:6;
+unsigned short ParamType;
+unsigned char ParamLength;
+unsigned char ParamValue[16];
+unsigned char CRC8;
+} sIB2_ResponseGetParam;
+For example: the responding host supports advanced functions. The function code of the
+advanced function is 0x01
+The data protocol is: (see the appendix for the specific protocol encoding)
+0x02(2b) 0x03(6b) 0x01 0X00 0X01 0X01 0X00 …… CRC
+3.2 CommandCode is 4
+The device responds to the host with commands to set device parameters, returning a success
+or failure message.
+Data format
+typedef __packed struct
+{
+unsigned char PacketType:2;
+unsigned char CommandCode:6;
+unsigned short ParamType;
+unsigned char ParamLength; // 0 if parameter not supported
+unsigned char Reserved[16];
+unsigned char CRC8;
+} sIB2_ResponseSetParam;
+For example: the result of the response host setting protocol number 5 (see appendix for
+specific protocol codes).
+The data protocol is as follows:
+0x02(2b) 0x04(6b) 0x03 0X00 0X01 0X01 0X00 …… CRC
+3.3 CommandCode is 2
+The device replies to the host with a command to retrieve data from the device (the data
+returned by the device will be received as sensor data and returned to the transmitter (such
+as voltage, current, speed, etc.)). The maximum length is 14.
+Data format
+typedef __packed struct
+{
+unsigned char PacketType:2;
+unsigned char CommandCode:6;
+unsigned char Value[14];
+unsigned char VID;
+unsigned char PID;
+unsigned char Reserved[3];
+unsigned char CRC8;
+} sIB2_ResponseGetValue;
+Definition of Value[14]:
+unsigned char PackType:4 data type
+unsigned char PackLenght:6 Total number of data packets
+unsigned char PackCurIndex:6 The sequence number of the currently sent packet.
+unsigned char Data1Type:6 See details: Return Parameter Name (Sensor Type)
+For details on unsigned char Data1Format:5, please see: Data Format
+For details on unsigned char Data1Unit:5, please see: Data Units
+The unsigned short Data1 data portion transmits S16 type data normally.
+unsigned char Data2Type:6 See details: Return Parameter Name (Sensor Type)
+For details on unsigned char Data2Format:5, please see: Data Format.
+For details on unsigned char Data2Unit:5, please see: Data Units.
+The unsigned short Data2 data portion transmits S16 type data normally.
+unsigned char Data3Type:6 See: Return Parameter Name (Sensor Type) for details.
+For details on unsigned char Data3Format:5, please see: Data Format.
+For details on unsigned char Data3Unit:5, please see: Data Units.
+The unsigned short Data3 data portion transmits S16 type data normally.
+For example, the current response from the host only contains a voltage data point: 5.25V
+(see appendix for specific protocol encoding).
+The data protocol is as follows:
+0x02(2b) 0x02(6b) 0x00(4b) 0X01(6b) 0X01(6b) 0X01(6b) 0X02(5b) 0X01(5b)
+0X0B 0X02 0X00(6b) 0X00(5b) 0X00(5b) 0X00 0X00 0X00(6b)
+0X00(5b) 0X00(5b) 0X00 0X00 VID PID … CRC
+For example, the current response to the host contains four data points: a voltage of 5.25V, a
+current of 0.5A, a speed of 60,000 m/s, and a signal strength of 100 (see the appendix for
+specific protocol encoding).
+The data protocol is as follows:
+First package
+0x02(2b) 0x02(6b) 0x00(4b) 0X02(6b) 0X01(6b) 0X01(6b) 0X02(5b) 0X01(5b)
+0X0B 0X02 0X02(6b) 0X01(5b) 0X02(5b) 0X05 0X00 0X00(6b)
+0X00(5b) 0X00(5b) 0X60 0XEA VID PID … CRC
+Second package
+0x02(2b) 0x02(6b) 0x00(4b) 0X02(6b) 0X02(6b) 0X18 (6b) 0X00(5b) 0X00(5b)
+0X64 0X00 0X00(6b) 0X00(5b) 0X00(5b) 0X00 0X00 0X00(6b)
+0X00(5b) 0X00(5b) 0X00 0X00 VID PID … CRC
+This data is normal, real-time sensor-related data. If the data exceeds the number of packets
+to be sent, it will be sent in multiple packets. If a host-initiated request command is inserted
+midway, the host command will be responded to first, and then the loop will continue.
+3.4 CommandCode for other cases
+In other cases, it follows the standard i-bus2 protocol, which will not be elaborated further.
+4. Product ID
+VID:0X01
+PID:0X03
+5. Command Description
+Special instructions are provided for certain commands.
+5.1. Advanced commands
+Advanced commands are one of the key features of this release.
+We need to implement an advanced command that queries whether a command is supported
+and returns all supported commands.
+After using the advanced command to query the host, the returned data format is referenced
+in section 3.1.
+typedef __packed struct
+{
+unsigned char PacketType:2; //0X02
+unsigned char CommandCode:6; //0X03
+unsigned short ParamType; //0X0001
+// Supports a maximum of 16 advanced commands. Returning 0 or a timeout indicating no
+response means it is not supported.
+unsigned char ParamLength;
+//The order represents the range of values to be sent for the corresponding supported
+advanced commands.
+If two advanced commands are supported, with a length setting of 2, the first command
+supports sending parameters 0 and 1, while the second command supports sending
+parameters 0 to 4.
+Then ParamLength = 2, ParamValue[0] = 2, ParamValue[1] = 5, and the rest are padded
+with 0.
+unsigned char ParamValue[16];
+unsigned char CRC8;
+} sIB2_ResponseGetParam;
+like:
+Advanced commands for host query
+Without
+paramete
+rs
+0x01(2b) 0x03(6b) 0x01 0X00 0X00 0X00 0X00 …… CRC
+Advanced commands supported by slave response
+Numb
+er of
+suppor
+ters
+Set range Set range
+0x02(2b) 0x03(6b) 0x01 0X00 0X02 0X02 0X05 …… CRC
+First advanced command for host configuration
+The data
+length can
+be fixed at
+2.
+Represent
+s the first
+command
+Setting
+value
+（0~1）
+0x01(2b) 0x04(6b) 0x01 0X00 0X02 0X01 0X01 …… CRC
+The slave device replies with the first advanced command status.
+0 indicates
+not
+supported,
+always
+returns 2.
+Represent
+s the first
+command
+Setting
+status: 0
+-
+Failure,
+others -
+Success
+0x02(2b) 0x04(6b) 0x01 0X00 0X02 0X01 0X01 …… CRC
+5.2. Obtain device information
+Complete device settings can be obtained directly.
+like:
+Host query device information
+Without
+paramete
+rs
+0x01(2b) 0x03(6b) 0x0B 0X00 0X00 0X00 0X00 …… CRC
+Slave reply device information
+Advanced
+features: 0
+means not
+supported,
+others mean
+supported.
+Control Channel
+0x02(2b) 0x03(6b) 0x0B 0X00 0X02 0X02
+external protocol Equipment
+Number
+0X02 0X00 0X02 0X00 …… CRC
+appendix:
+Protocol type Serial
+Num
+ber
+meaning protocol Agreement
+Notes
+Data types 0 Normal command
+1 Extended Command 1 Not needed
+for now
+2 Extended Command 2 Reserved for
+future
+expansion
+3 Extended Command 3
+4 Extended Command 4
+5 Extended Command 5
+6 Extended Command 6
+7 Extended Command 8
+Returned parameter
+name (sensor type)
+0 Error Type No data in the
+table, do not
+parse.
+1 Voltage Voltage
+2 Current Current
+3 rotational
+speed
+Revolution
+4 air pressure Pressure
+5 Hydraulics Hyd.
+Pressure
+6 speed speed
+7 power Power
+8 time Time
+9 Consumptio
+n capacity
+Cons.
+Capacity
+10 Remaining
+capacity
+Rema.
+Capacity
+11 runtime Run Time
+12 time left Rema.
+Time
+13 Maximum
+voltage
+Max
+Voltage
+14 Minimum
+voltage
+Min
+Voltage
+15 Maximum
+current
+Max
+Current
+16 Average
+current
+Ave.
+Current
+17 Yaw angle Yaw angle
+18 Pitch angle Pitch
+angle
+19 Roll angle Roll
+angle
+20 Starting
+angle
+Start
+angle
+21 altitude Altitude
+22 high Height
+23 distance Distance
+24 signal
+strength
+Signal
+25 Work status Condition
+26 flow Flowmeter
+27 temperature
+Temperture
+28 angle Angle
+29 angular
+velocity
+Angular
+speed
+30 acceleration Acceleration
+31 angular
+acceleration
+Ang.
+Acceleration
+32 accelerator Throttle
+33 airspeed Airspeed
+34 Motor
+temperature
+Motor
+Temperatur
+e
+35 Main control
+temperature
+MCU Temp
+36 MOS
+temperature
+MOS Temp
+37 SBEC voltage SBEC
+Voltage
+38 electric angle Electrical
+Angle
+39 Advance
+angle
+Timing
+40 Number of
+lithium
+batteries
+Number of
+Cells
+41 Type 9
+42 Type 10
+43 Type 11
+44 Type 12
+45 Type 13
+46 Type 14
+47 Type 15
+48 Type 16
+49 Type 17
+50 Type 18
+51 Type 19
+52 Type 20
+53 Type 21
+54 Type 22
+55 Type 23
+56 Type 24
+57 Type 25
+58 Type 26
+59 Type 27
+60 Type 28
+61 Type 29
+62 Type 30
+63 Type 31
+Data Units 0 Unitless
+1 V
+2 A
+3 mA
+4 rpm
+5 pa
+6 kg
+7 Km/h
+8 m/s
+9 W
+10 mW
+11 mAh
+12 ml
+13 L
+14 dL
+15 mV
+16 °/s
+17 r/s
+18 /s
+19 m/s²
+20 /s²
+21 °
+22 ℃
+23 %
+24 m
+25 km
+26 S
+27 Unit 4
+28 Unit 5
+29 Unit 6
+30 Unit 7
+31 Unit 8
+Data format 0 Integer
+1 1 decimal place
+2 2 decimal places
+3 3 decimal places
+4 4 decimal places
+5 5 decimal places
+6 6 decimal places
+7 7 decimal places
+8 8 decimal places
+9 10 to the power of 1
+10 10 to the power of 2
+11 10 to the power of 3
+12 10 to the power of 4
+13 10 to the power of 5
+14 10 to the power of 6
+15 10 to the power of 7
+16 10 to the power of 8
+17 Time h:4b;m:6b;s:6b
+18 Date Year from
+2000 onwards,
+Y:7b;M:4b;D:5
+b
+19 Yes/No
+20 Options (2 items)
+21 Options (3 items)
+22 Options (4 items)
+23 Options (5 items)
+24 Options (6 items)
+25 Options (7 items)
+26 Options (8 items)
+27 Unknown format 1
+28 Unknown format 2
+29 Unknown format 3
+30 Unknown format 4
+31 Unknown format 5
+Telemetry adapter
+transmitter
+command settings
+1 Advanced function reading
+and setting
+details see
+document
+description 5.1
+2 Set channel (1~32) 1 byte
+3 External protocol 2 bytes
+4 Device number 2 bytes
+5 Memory card status x
+6 Clear memory
+7 Enable memory
+8 Turn off storage
+9 Memory card memory size
+10 Memory card remaining
+space
+11 Get device information see document
+5.2
+12 Get device name
+13 Reset single parameter
+14 Reset all configuration
+parameters

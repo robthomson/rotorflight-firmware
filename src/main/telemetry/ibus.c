@@ -61,6 +61,7 @@
 #include "telemetry/ibus.h"
 #include "telemetry/ibus_shared.h"
 #include "telemetry/telemetry.h"
+#include "rx/rx.h"
 
 
 #define IBUS_TASK_PERIOD_US (1000)
@@ -106,6 +107,10 @@ void initIbusTelemetry(void)
 
 void handleIbusTelemetry(void)
 {
+    if (rxRuntimeState.serialrxProvider == SERIALRX_IBUS2) {
+        return;
+    }
+
     if (!ibusTelemetryEnabled) {
         return;
     }
@@ -129,6 +134,10 @@ void handleIbusTelemetry(void)
 
 bool checkIbusTelemetryState(void)
 {
+    if (rxRuntimeState.serialrxProvider == SERIALRX_IBUS2) {
+        return false;
+    }
+
     bool newTelemetryEnabledValue = telemetryDetermineEnabledState(ibusPortSharing);
 
     if (newTelemetryEnabledValue == ibusTelemetryEnabled) {

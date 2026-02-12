@@ -196,6 +196,7 @@ COMMON_SRC = \
             telemetry/mavlink.c \
             telemetry/msp_shared.c \
             telemetry/ibus.c \
+            telemetry/ibus2.c \
             telemetry/ibus_shared.c \
             telemetry/sensors.c \
             sensors/esc_sensor.c \
