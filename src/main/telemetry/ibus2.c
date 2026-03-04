@@ -28,6 +28,8 @@
 
 #define IBUS2_FRAME_LEN     (21)
 #define IBUS2_CRC_SIZE      (1)
+#define IBUS2_FIRST_FRAME_MIN_LEN (4)
+#define IBUS2_FIRST_FRAME_MAX_LEN (37)
 
 #define IBUS2_PACKET_TYPE_COMMAND  (1)
 #define IBUS2_PACKET_TYPE_RESPONSE (2)
@@ -63,7 +65,7 @@
 static serialPort_t *ibus2SerialPort = NULL;
 static const serialPortConfig_t *ibus2SerialPortConfig;
 
-static uint8_t outboundBytesToIgnoreOnRxCount = 0;
+static uint16_t outboundBytesToIgnoreOnRxCount = 0;
 static bool ibus2TelemetryEnabled = false;
 static portSharing_e ibus2PortSharing;
 
@@ -93,24 +95,58 @@ uint32_t ibus2DbgTxCount = 0;
 uint32_t ibus2DbgCmdGetValue = 0;
 uint32_t ibus2DbgCmdGetParam = 0;
 uint32_t ibus2DbgCmdSetParam = 0;
+uint32_t ibus2DbgCmdOther = 0;
+uint32_t ibus2DbgSecondFrameSeen = 0;
+uint32_t ibus2DbgSecondFrameCrcFail = 0;
 uint8_t ibus2DbgLastFrame[IBUS2_FRAME_LEN] = { 0 };
+uint8_t ibus2DbgLastTxFrame[IBUS2_FRAME_LEN] = { 0 };
 uint8_t ibus2DbgLastHeaderRaw = 0;
 uint8_t ibus2DbgLastPacketType = 0;
 uint8_t ibus2DbgLastCommandCode = 0;
 
 typedef struct {
-    bool active;
+    uint8_t buf[IBUS2_FIRST_FRAME_MAX_LEN];
+    uint8_t idx;
+    uint8_t len;
+} ibus2FirstFrameParser_t;
+
+typedef struct {
     uint8_t buf[IBUS2_FRAME_LEN];
     uint8_t idx;
-} ibus2CmdParser_t;
+} ibus2SecondFrameParser_t;
 
-static ibus2CmdParser_t ibus2CmdParser = { 0 };
+typedef enum {
+    IBUS2_PARSE_SYNC_TO_FIRST_FRAME = 0,
+    IBUS2_PARSE_READ_FIRST_FRAME,
+    IBUS2_PARSE_WAIT_SECOND_FRAME,
+    IBUS2_PARSE_READ_SECOND_FRAME
+} ibus2ParseState_e;
+
+static ibus2FirstFrameParser_t ibus2FirstFrameParser = { 0 };
+static ibus2SecondFrameParser_t ibus2SecondFrameParser = { 0 };
+static ibus2ParseState_e ibus2ParseState = IBUS2_PARSE_SYNC_TO_FIRST_FRAME;
+static uint8_t ibus2CommandWindow[IBUS2_FRAME_LEN] = { 0 };
+static uint8_t ibus2CommandWindowCount = 0;
+
+static void handleCommandFrame(const uint8_t *frame);
 
 
 static void pushOntoTail(uint8_t *buffer, size_t bufferLength, uint8_t value)
 {
     memmove(buffer, buffer + 1, bufferLength - 1);
     buffer[bufferLength - 1] = value;
+}
+
+static void resetIbus2Parsers(void)
+{
+    ibus2FirstFrameParser.idx = 0;
+    ibus2FirstFrameParser.len = 0;
+    ibus2SecondFrameParser.idx = 0;
+    memset(ibus2CommandWindow, 0, sizeof(ibus2CommandWindow));
+    ibus2CommandWindowCount = 0;
+    ibus2ParseState = IBUS2_PARSE_SYNC_TO_FIRST_FRAME;
+    ibus2HeaderLayout = IBUS2_HEADER_UNKNOWN;
+    ibus2CrcMode = IBUS2_CRC_UNKNOWN;
 }
 
 
@@ -204,15 +240,19 @@ static uint8_t ibus2CrcCompute(const uint8_t *data, size_t len)
     return ibus2Crc8Msb(data, len);
 }
 
-static bool ibus2CrcOk(const uint8_t *frame)
+static bool ibus2CrcOk(const uint8_t *frame, size_t frameLen)
 {
-    const uint8_t expected = frame[IBUS2_FRAME_LEN - 1];
-    const uint8_t msb = ibus2Crc8Msb(frame, IBUS2_FRAME_LEN - IBUS2_CRC_SIZE);
+    if (frameLen < 2) {
+        return false;
+    }
+
+    const uint8_t expected = frame[frameLen - 1];
+    const uint8_t msb = ibus2Crc8Msb(frame, frameLen - IBUS2_CRC_SIZE);
     if (msb == expected) {
         ibus2CrcMode = IBUS2_CRC_MSB;
         return true;
     }
-    const uint8_t lsb = ibus2Crc8Lsb(frame, IBUS2_FRAME_LEN - IBUS2_CRC_SIZE);
+    const uint8_t lsb = ibus2Crc8Lsb(frame, frameLen - IBUS2_CRC_SIZE);
     if (lsb == expected) {
         ibus2CrcMode = IBUS2_CRC_LSB;
         return true;
@@ -243,6 +283,9 @@ static void sendResponse(const uint8_t *frame, size_t len)
         return;
     }
     serialWriteBuf(ibus2SerialPort, frame, len);
+    if (len == IBUS2_FRAME_LEN) {
+        memcpy(ibus2DbgLastTxFrame, frame, IBUS2_FRAME_LEN);
+    }
     outboundBytesToIgnoreOnRxCount += len;
     ibus2DbgTxCount++;
 }
@@ -361,6 +404,301 @@ static bool decodeHeader(uint8_t raw, uint8_t *packetType, uint8_t *commandCode)
     return true;
 }
 
+static bool decodeHeaderWithLayout(uint8_t raw, ibus2HeaderLayout_e layout, uint8_t *packetType, uint8_t *commandCode)
+{
+    if (layout == IBUS2_HEADER_LSB) {
+        *packetType = raw & 0x03;
+        *commandCode = raw >> 2;
+        return true;
+    }
+
+    if (layout == IBUS2_HEADER_MSB) {
+        *packetType = (raw >> 6) & 0x03;
+        *commandCode = raw & 0x3F;
+        return true;
+    }
+
+    return false;
+}
+
+static bool isCommandPayloadSane(const uint8_t *frame, uint8_t commandCode)
+{
+    UNUSED(frame);
+    UNUSED(commandCode);
+    return true;
+}
+
+static bool isCommandCodeSupported(uint8_t commandCode)
+{
+    return commandCode <= 0x3F;
+}
+
+static uint8_t commandCodeScore(uint8_t commandCode)
+{
+    if (commandCode >= IBUS2_CMD_GET_TYPE && commandCode <= IBUS2_CMD_SET_PARAM) {
+        return 4;
+    }
+    if (commandCode <= 16) {
+        return 3;
+    }
+    if (commandCode <= 31) {
+        return 2;
+    }
+    return 1;
+}
+
+static bool isResponseWorthyCommand(uint8_t commandCode)
+{
+    switch (commandCode) {
+    case IBUS2_CMD_GET_TYPE:
+    case IBUS2_CMD_GET_VALUE:
+    case IBUS2_CMD_GET_PARAM:
+    case IBUS2_CMD_SET_PARAM:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static void respondUnknownCommand(const uint8_t *request, uint8_t commandCode)
+{
+    uint8_t response[IBUS2_FRAME_LEN] = { 0 };
+
+    buildResponseHeader(response, commandCode);
+    // Echo request payload bytes for compatibility with vendor-specific commands.
+    memcpy(&response[1], &request[1], IBUS2_FRAME_LEN - 2);
+
+    response[IBUS2_FRAME_LEN - 1] = ibus2CrcCompute(response, IBUS2_FRAME_LEN - IBUS2_CRC_SIZE);
+    sendResponse(response, IBUS2_FRAME_LEN);
+}
+
+static bool isPacketTypeWithLayout(uint8_t raw, ibus2HeaderLayout_e layout, uint8_t packetType)
+{
+    uint8_t pt = 0;
+    uint8_t cc = 0;
+    if (!decodeHeaderWithLayout(raw, layout, &pt, &cc)) {
+        return false;
+    }
+    UNUSED(cc);
+    return pt == packetType;
+}
+
+static bool isPotentialFirstFrameHeader(uint8_t raw)
+{
+    if (ibus2HeaderLayout == IBUS2_HEADER_LSB || ibus2HeaderLayout == IBUS2_HEADER_MSB) {
+        return isPacketTypeWithLayout(raw, ibus2HeaderLayout, 0);
+    }
+
+    return ((raw & 0x03) == 0) || (((raw >> 6) & 0x03) == 0);
+}
+
+static bool detectCommandHeader(uint8_t raw, ibus2HeaderLayout_e *layout)
+{
+    uint8_t pt = 0;
+    uint8_t cc = 0;
+
+    if (ibus2HeaderLayout == IBUS2_HEADER_LSB || ibus2HeaderLayout == IBUS2_HEADER_MSB) {
+        decodeHeaderWithLayout(raw, ibus2HeaderLayout, &pt, &cc);
+        if (pt == IBUS2_PACKET_TYPE_COMMAND) {
+            *layout = ibus2HeaderLayout;
+            return true;
+        }
+    }
+
+    decodeHeaderWithLayout(raw, IBUS2_HEADER_LSB, &pt, &cc);
+    if (pt == IBUS2_PACKET_TYPE_COMMAND) {
+        *layout = IBUS2_HEADER_LSB;
+        return true;
+    }
+
+    decodeHeaderWithLayout(raw, IBUS2_HEADER_MSB, &pt, &cc);
+    if (pt == IBUS2_PACKET_TYPE_COMMAND) {
+        *layout = IBUS2_HEADER_MSB;
+        return true;
+    }
+
+    return false;
+}
+
+static void startFirstFrameParse(uint8_t firstByte)
+{
+    ibus2FirstFrameParser.idx = 0;
+    ibus2FirstFrameParser.len = 0;
+    ibus2FirstFrameParser.buf[ibus2FirstFrameParser.idx++] = firstByte;
+    ibus2ParseState = IBUS2_PARSE_READ_FIRST_FRAME;
+}
+
+static bool handleIbus2CommandFrameIfValid(const uint8_t *frame)
+{
+    ibus2DbgSecondFrameSeen++;
+
+    if (!ibus2CrcOk(frame, IBUS2_FRAME_LEN)) {
+        ibus2DbgSecondFrameCrcFail++;
+        return false;
+    }
+
+    uint8_t packetType = 0;
+    uint8_t commandCode = 0;
+    decodeHeader(frame[0], &packetType, &commandCode);
+    if (packetType != IBUS2_PACKET_TYPE_COMMAND ||
+        !isCommandCodeSupported(commandCode) ||
+        !isCommandPayloadSane(frame, commandCode)) {
+        return false;
+    }
+
+    ibus2DbgCrcOk++;
+    memcpy(ibus2DbgLastFrame, frame, sizeof(ibus2DbgLastFrame));
+    ibus2DbgLastHeaderRaw = frame[0];
+    {
+        ibus2DbgLastPacketType = packetType;
+        ibus2DbgLastCommandCode = commandCode;
+    }
+    handleCommandFrame(frame);
+
+    return true;
+}
+
+static bool parseStreamFrameByte(uint8_t c)
+{
+    switch (ibus2ParseState) {
+    case IBUS2_PARSE_SYNC_TO_FIRST_FRAME:
+        if (isPotentialFirstFrameHeader(c)) {
+            startFirstFrameParse(c);
+        }
+        return false;
+
+    case IBUS2_PARSE_READ_FIRST_FRAME:
+        ibus2FirstFrameParser.buf[ibus2FirstFrameParser.idx++] = c;
+
+        if (ibus2FirstFrameParser.idx == 2) {
+            const uint8_t len = ibus2FirstFrameParser.buf[1];
+            if (len < IBUS2_FIRST_FRAME_MIN_LEN || len > IBUS2_FIRST_FRAME_MAX_LEN) {
+                ibus2ParseState = IBUS2_PARSE_SYNC_TO_FIRST_FRAME;
+                if (isPotentialFirstFrameHeader(c)) {
+                    startFirstFrameParse(c);
+                }
+                return false;
+            }
+            ibus2FirstFrameParser.len = len;
+        }
+
+        if (ibus2FirstFrameParser.len && ibus2FirstFrameParser.idx >= ibus2FirstFrameParser.len) {
+            if (ibus2CrcOk(ibus2FirstFrameParser.buf, ibus2FirstFrameParser.len)) {
+                const uint8_t header = ibus2FirstFrameParser.buf[0];
+                const bool lsbType0 = ((header & 0x03) == 0);
+                const bool msbType0 = ((((header >> 6) & 0x03) == 0));
+
+                ibus2DbgFramesSeen++;
+                if (lsbType0 && !msbType0) {
+                    ibus2HeaderLayout = IBUS2_HEADER_LSB;
+                } else if (msbType0 && !lsbType0) {
+                    ibus2HeaderLayout = IBUS2_HEADER_MSB;
+                }
+
+                ibus2ParseState = IBUS2_PARSE_WAIT_SECOND_FRAME;
+            } else {
+                ibus2ParseState = IBUS2_PARSE_SYNC_TO_FIRST_FRAME;
+            }
+        }
+        return false;
+
+    case IBUS2_PARSE_WAIT_SECOND_FRAME:
+    {
+        ibus2HeaderLayout_e layout = IBUS2_HEADER_UNKNOWN;
+        if (detectCommandHeader(c, &layout)) {
+            ibus2HeaderLayout = layout;
+            ibus2SecondFrameParser.idx = 0;
+            ibus2SecondFrameParser.buf[ibus2SecondFrameParser.idx++] = c;
+            ibus2ParseState = IBUS2_PARSE_READ_SECOND_FRAME;
+        } else if (isPotentialFirstFrameHeader(c)) {
+            startFirstFrameParse(c);
+        } else {
+            ibus2ParseState = IBUS2_PARSE_SYNC_TO_FIRST_FRAME;
+        }
+        return false;
+    }
+
+    case IBUS2_PARSE_READ_SECOND_FRAME:
+        ibus2SecondFrameParser.buf[ibus2SecondFrameParser.idx++] = c;
+        if (ibus2SecondFrameParser.idx >= IBUS2_FRAME_LEN) {
+            ibus2ParseState = IBUS2_PARSE_SYNC_TO_FIRST_FRAME;
+            return handleIbus2CommandFrameIfValid(ibus2SecondFrameParser.buf);
+        }
+        return false;
+    }
+
+    return false;
+}
+
+static bool isLikelyCommandFrame(const uint8_t *frame, ibus2HeaderLayout_e *layout, ibus2CrcMode_e *crcMode)
+{
+    const uint8_t expected = frame[IBUS2_FRAME_LEN - 1];
+    const uint8_t msb = ibus2Crc8Msb(frame, IBUS2_FRAME_LEN - IBUS2_CRC_SIZE);
+    const uint8_t lsb = ibus2Crc8Lsb(frame, IBUS2_FRAME_LEN - IBUS2_CRC_SIZE);
+    const bool msbOk = (msb == expected);
+    const bool lsbOk = (lsb == expected);
+
+    if (!msbOk && !lsbOk) {
+        return false;
+    }
+
+    const ibus2HeaderLayout_e candidates[2] = { IBUS2_HEADER_LSB, IBUS2_HEADER_MSB };
+    ibus2HeaderLayout_e bestLayout = IBUS2_HEADER_UNKNOWN;
+    uint8_t bestScore = 0;
+    uint8_t bestCommand = 0xFF;
+
+    for (int i = 0; i < 2; i++) {
+        uint8_t packetType = 0;
+        uint8_t commandCode = 0;
+        decodeHeaderWithLayout(frame[0], candidates[i], &packetType, &commandCode);
+        if (packetType != IBUS2_PACKET_TYPE_COMMAND ||
+            !isCommandCodeSupported(commandCode) ||
+            !isCommandPayloadSane(frame, commandCode)) {
+            continue;
+        }
+
+        uint8_t score = commandCodeScore(commandCode);
+        if (ibus2HeaderLayout == candidates[i]) {
+            score += 1;
+        }
+
+        if (bestLayout == IBUS2_HEADER_UNKNOWN ||
+            score > bestScore ||
+            (score == bestScore && commandCode < bestCommand)) {
+            bestLayout = candidates[i];
+            bestScore = score;
+            bestCommand = commandCode;
+        }
+    }
+
+    if (bestLayout != IBUS2_HEADER_UNKNOWN) {
+        *layout = bestLayout;
+        *crcMode = msbOk ? IBUS2_CRC_MSB : IBUS2_CRC_LSB;
+        return true;
+    }
+
+    return false;
+}
+
+static bool parseRollingCommandByte(uint8_t c)
+{
+    pushOntoTail(ibus2CommandWindow, IBUS2_FRAME_LEN, c);
+    if (ibus2CommandWindowCount < IBUS2_FRAME_LEN) {
+        ibus2CommandWindowCount++;
+        return false;
+    }
+
+    ibus2HeaderLayout_e layout = IBUS2_HEADER_UNKNOWN;
+    ibus2CrcMode_e crcMode = IBUS2_CRC_UNKNOWN;
+    if (!isLikelyCommandFrame(ibus2CommandWindow, &layout, &crcMode)) {
+        return false;
+    }
+
+    ibus2HeaderLayout = layout;
+    ibus2CrcMode = crcMode;
+    return handleIbus2CommandFrameIfValid(ibus2CommandWindow);
+}
+
 
 static void handleCommandFrame(const uint8_t *frame)
 {
@@ -380,23 +718,29 @@ static void handleCommandFrame(const uint8_t *frame)
         ibus2DbgCmdGetParam++;
     } else if (commandCode == IBUS2_CMD_SET_PARAM) {
         ibus2DbgCmdSetParam++;
+    } else {
+        ibus2DbgCmdOther++;
     }
 
-    switch (commandCode) {
-    case IBUS2_CMD_GET_TYPE:
-        respondGetType();
-        break;
-    case IBUS2_CMD_GET_VALUE:
-        respondGetValue();
-        break;
-    case IBUS2_CMD_GET_PARAM:
-        respondGetParam(frame);
-        break;
-    case IBUS2_CMD_SET_PARAM:
-        respondSetParam(frame);
-        break;
-    default:
-        break;
+    if (isResponseWorthyCommand(commandCode)) {
+        switch (commandCode) {
+        case IBUS2_CMD_GET_TYPE:
+            respondGetType();
+            break;
+        case IBUS2_CMD_GET_VALUE:
+            respondGetValue();
+            break;
+        case IBUS2_CMD_GET_PARAM:
+            respondGetParam(frame);
+            break;
+        case IBUS2_CMD_SET_PARAM:
+            respondSetParam(frame);
+            break;
+        default:
+            break;
+        }
+    } else {
+        respondUnknownCommand(frame, commandCode);
     }
 }
 
@@ -406,6 +750,7 @@ void initIbus2Telemetry(void)
     ibus2SerialPortConfig = findSerialPortConfig(FUNCTION_TELEMETRY_IBUS);
     ibus2PortSharing = determinePortSharing(ibus2SerialPortConfig, FUNCTION_TELEMETRY_IBUS);
     ibus2TelemetryEnabled = false;
+    resetIbus2Parsers();
 }
 
 
@@ -481,6 +826,7 @@ void configureIbus2TelemetryPort(void)
 
     ibus2TelemetryEnabled = true;
     outboundBytesToIgnoreOnRxCount = 0;
+    resetIbus2Parsers();
 }
 
 
@@ -489,6 +835,7 @@ void freeIbus2TelemetryPort(void)
     closeSerialPort(ibus2SerialPort);
     ibus2SerialPort = NULL;
     ibus2TelemetryEnabled = false;
+    resetIbus2Parsers();
 }
 
 
@@ -497,6 +844,7 @@ void initSharedIbus2Telemetry(serialPort_t *port)
     ibus2SerialPort = port;
     ibus2TelemetryEnabled = true;
     outboundBytesToIgnoreOnRxCount = 0;
+    resetIbus2Parsers();
 }
 
 
@@ -515,46 +863,9 @@ void ibus2ProcessRxByte(uint8_t c)
     // Sliding buffer for last bytes (debug only)
     pushOntoTail(ibus2ReceiveBuffer, IBUS2_FRAME_LEN, c);
 
-    // Command frame parser: look for PacketType=1 and CommandCode 1..4
-    if (!ibus2CmdParser.active) {
-        uint8_t pt = c & 0x03;
-        uint8_t cc = c >> 2;
-        if (pt == IBUS2_PACKET_TYPE_COMMAND && cc >= 1 && cc <= 4) {
-            ibus2HeaderLayout = IBUS2_HEADER_LSB;
-            ibus2CmdParser.active = true;
-        } else {
-            pt = (c >> 6) & 0x03;
-            cc = c & 0x3F;
-            if (pt == IBUS2_PACKET_TYPE_COMMAND && cc >= 1 && cc <= 4) {
-                ibus2HeaderLayout = IBUS2_HEADER_MSB;
-                ibus2CmdParser.active = true;
-            }
-        }
-
-        if (ibus2CmdParser.active) {
-            ibus2CmdParser.idx = 0;
-            ibus2CmdParser.buf[ibus2CmdParser.idx++] = c;
-        }
-    } else {
-        ibus2CmdParser.buf[ibus2CmdParser.idx++] = c;
-        if (ibus2CmdParser.idx >= IBUS2_FRAME_LEN) {
-            ibus2CmdParser.active = false;
-            ibus2CmdParser.idx = 0;
-
-            if (ibus2CrcOk(ibus2CmdParser.buf)) {
-                ibus2DbgCrcOk++;
-                memcpy(ibus2DbgLastFrame, ibus2CmdParser.buf, sizeof(ibus2DbgLastFrame));
-                ibus2DbgLastHeaderRaw = ibus2CmdParser.buf[0];
-                {
-                    uint8_t pt = 0;
-                    uint8_t cc = 0;
-                    decodeHeader(ibus2CmdParser.buf[0], &pt, &cc);
-                    ibus2DbgLastPacketType = pt;
-                    ibus2DbgLastCommandCode = cc;
-                }
-                handleCommandFrame(ibus2CmdParser.buf);
-            }
-        }
+    const bool handledByStreamParser = parseStreamFrameByte(c);
+    if (!handledByStreamParser) {
+        parseRollingCommandByte(c);
     }
 
     DEBUG_SET(DEBUG_TTA, 0, ibus2DbgBytesSeen);

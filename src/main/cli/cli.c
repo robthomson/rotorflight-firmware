@@ -6195,23 +6195,58 @@ static void cliIbus2TelemetryInfo(const char *cmdName, char *cmdline)
 
     extern uint32_t ibus2DbgBytesSeen;
     extern uint32_t ibus2DbgNonZeroBytes;
+    extern uint32_t ibus2DbgFramesSeen;
     extern uint32_t ibus2DbgCrcOk;
     extern uint32_t ibus2DbgCmdGetType;
     extern uint32_t ibus2DbgTxCount;
     extern uint32_t ibus2DbgCmdGetValue;
     extern uint32_t ibus2DbgCmdGetParam;
     extern uint32_t ibus2DbgCmdSetParam;
+    extern uint32_t ibus2DbgCmdOther;
+    extern uint32_t ibus2DbgSecondFrameSeen;
+    extern uint32_t ibus2DbgSecondFrameCrcFail;
+#ifdef USE_SERIALRX_IBUS
+    extern uint32_t ibus2RxDbgBytes;
+    extern uint32_t ibus2RxDbgFirstFramesSeen;
+    extern uint32_t ibus2RxDbgFirstFramesCrcOk;
+    extern uint32_t ibus2RxDbgFirstFramesCrcFail;
+    extern uint32_t ibus2RxDbgSecondFramesSkipped;
+    extern uint32_t ibus2RxDbgSubtype0Seen;
+    extern uint32_t ibus2RxDbgSubtype1Seen;
+    extern uint32_t ibus2RxDbgSubtype2Seen;
+    extern uint32_t ibus2RxDbgDecodeOk;
+    extern uint32_t ibus2RxDbgDecodeFail;
+    extern uint8_t ibus2RxDbgLastHeader;
+    extern uint8_t ibus2RxDbgLastLength;
+    extern uint8_t ibus2RxDbgLastSubtype;
+    extern uint16_t ibus2RxDbgLastChannels[4];
+#endif
     extern uint8_t ibus2DbgLastHeaderRaw;
     extern uint8_t ibus2DbgLastPacketType;
     extern uint8_t ibus2DbgLastCommandCode;
 
     cliPrintLinef("IBUS2 bytes: %u", ibus2DbgBytesSeen);
     cliPrintLinef("IBUS2 nonzero bytes: %u", ibus2DbgNonZeroBytes);
+    cliPrintLinef("IBUS2 first-frame crc ok: %u", ibus2DbgFramesSeen);
     cliPrintLinef("IBUS2 crc ok: %u", ibus2DbgCrcOk);
     cliPrintLinef("IBUS2 get type: %u", ibus2DbgCmdGetType);
     cliPrintLinef("IBUS2 get value: %u", ibus2DbgCmdGetValue);
     cliPrintLinef("IBUS2 get param: %u", ibus2DbgCmdGetParam);
     cliPrintLinef("IBUS2 set param: %u", ibus2DbgCmdSetParam);
+    cliPrintLinef("IBUS2 other cmd: %u", ibus2DbgCmdOther);
+    cliPrintLinef("IBUS2 2nd-frame seen: %u", ibus2DbgSecondFrameSeen);
+    cliPrintLinef("IBUS2 2nd-frame crc fail: %u", ibus2DbgSecondFrameCrcFail);
+#ifdef USE_SERIALRX_IBUS
+    cliPrintLinef("IBUS2 RX bytes: %u", ibus2RxDbgBytes);
+    cliPrintLinef("IBUS2 RX first-frame seen: %u", ibus2RxDbgFirstFramesSeen);
+    cliPrintLinef("IBUS2 RX first-frame crc ok: %u", ibus2RxDbgFirstFramesCrcOk);
+    cliPrintLinef("IBUS2 RX first-frame crc fail: %u", ibus2RxDbgFirstFramesCrcFail);
+    cliPrintLinef("IBUS2 RX 2nd-frame bytes skipped: %u", ibus2RxDbgSecondFramesSkipped);
+    cliPrintLinef("IBUS2 RX subtype seen (0/1/2): %u/%u/%u", ibus2RxDbgSubtype0Seen, ibus2RxDbgSubtype1Seen, ibus2RxDbgSubtype2Seen);
+    cliPrintLinef("IBUS2 RX decode ok/fail: %u/%u", ibus2RxDbgDecodeOk, ibus2RxDbgDecodeFail);
+    cliPrintLinef("IBUS2 RX last hdr/len/sub: 0x%02X/%u/%u", ibus2RxDbgLastHeader, ibus2RxDbgLastLength, ibus2RxDbgLastSubtype);
+    cliPrintLinef("IBUS2 RX last ch1-4: %u %u %u %u", ibus2RxDbgLastChannels[0], ibus2RxDbgLastChannels[1], ibus2RxDbgLastChannels[2], ibus2RxDbgLastChannels[3]);
+#endif
     cliPrintLinef("IBUS2 tx: %u", ibus2DbgTxCount);
     cliPrintLinef("IBUS2 last hdr raw: 0x%02X", ibus2DbgLastHeaderRaw);
     cliPrintLinef("IBUS2 last pkt/cmd: %u/%u", ibus2DbgLastPacketType, ibus2DbgLastCommandCode);
@@ -6225,9 +6260,26 @@ static void cliIbus2TelemetryFrame(const char *cmdName, char *cmdline)
     UNUSED(cmdline);
 
     extern uint8_t ibus2DbgLastFrame[21];
-    cliPrintLine("IBUS2 last frame:");
+    extern uint8_t ibus2DbgLastTxFrame[21];
+#ifdef USE_SERIALRX_IBUS
+    extern uint8_t ibus2RxDbgLastLength;
+    extern uint8_t ibus2RxDbgLastFirstFrame[37];
+#endif
+    cliPrintLine("IBUS2 last RX frame:");
     for (int i = 0; i < 21; i++) {
         cliPrintf("%02X ", ibus2DbgLastFrame[i]);
+    }
+    cliPrintLinefeed();
+#ifdef USE_SERIALRX_IBUS
+    cliPrintLinef("IBUS2 last first frame (len=%u):", ibus2RxDbgLastLength);
+    for (int i = 0; i < 37; i++) {
+        cliPrintf("%02X ", ibus2RxDbgLastFirstFrame[i]);
+    }
+    cliPrintLinefeed();
+#endif
+    cliPrintLine("IBUS2 last TX frame:");
+    for (int i = 0; i < 21; i++) {
+        cliPrintf("%02X ", ibus2DbgLastTxFrame[i]);
     }
     cliPrintLinefeed();
 }
