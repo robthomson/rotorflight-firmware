@@ -72,7 +72,18 @@ typedef struct uartPort_s {
 #endif
     USART_TypeDef *USARTx;
     bool txDMAEmpty;
+    uint32_t rxFrameErrorCount;
+    uint32_t rxNoiseErrorCount;
+    uint32_t rxOverrunErrorCount;
 } uartPort_t;
+
+typedef struct uartPortDiagnostics_s {
+    bool rxDmaConfigured;
+    uint32_t rxFrameErrorCount;
+    uint32_t rxNoiseErrorCount;
+    uint32_t rxOverrunErrorCount;
+} uartPortDiagnostics_t;
 
 void uartPinConfigure(const serialPinConfig_t *pSerialPinConfig);
 serialPort_t *uartOpen(UARTDevice_e device, serialReceiveCallbackPtr rxCallback, void *rxCallbackData, uint32_t baudRate, portMode_e mode, portOptions_e options);
+bool uartGetPortDiagnostics(const serialPort_t *port, uartPortDiagnostics_t *diagnostics);

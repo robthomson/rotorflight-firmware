@@ -84,6 +84,7 @@ bool cliMode = false;
 #include "drivers/sdcard.h"
 #include "drivers/sensor.h"
 #include "drivers/serial.h"
+#include "drivers/serial_uart.h"
 #include "drivers/serial_escserial.h"
 #include "drivers/sound_beeper.h"
 #include "drivers/stack_check.h"
@@ -154,6 +155,7 @@ bool cliMode = false;
 #include "pg/freq.h"
 
 #include "rx/rx_bind.h"
+#include "rx/ibus2.h"
 #include "rx/rx_spi.h"
 
 #include "scheduler/scheduler.h"
@@ -6210,6 +6212,9 @@ static void cliIbus2TelemetryInfo(const char *cmdName, char *cmdline)
     extern uint32_t ibus2RxDbgFirstFramesSeen;
     extern uint32_t ibus2RxDbgFirstFramesCrcOk;
     extern uint32_t ibus2RxDbgFirstFramesCrcFail;
+    extern uint32_t ibus2RxDbgHeaderMatch;
+    extern uint32_t ibus2RxDbgLengthMismatch;
+    extern uint32_t ibus2RxDbgAddressMismatch;
     extern uint32_t ibus2RxDbgSecondFramesSkipped;
     extern uint32_t ibus2RxDbgSubtype0Seen;
     extern uint32_t ibus2RxDbgSubtype1Seen;
@@ -6220,6 +6225,8 @@ static void cliIbus2TelemetryInfo(const char *cmdName, char *cmdline)
     extern uint8_t ibus2RxDbgLastLength;
     extern uint8_t ibus2RxDbgLastSubtype;
     extern uint16_t ibus2RxDbgLastChannels[4];
+    uartPortDiagnostics_t uartDiag;
+    const bool haveUartDiag = uartGetPortDiagnostics(ibus2GetRxSerialPort(), &uartDiag);
 #endif
     extern uint8_t ibus2DbgLastHeaderRaw;
     extern uint8_t ibus2DbgLastPacketType;
@@ -6241,11 +6248,18 @@ static void cliIbus2TelemetryInfo(const char *cmdName, char *cmdline)
     cliPrintLinef("IBUS2 RX first-frame seen: %u", ibus2RxDbgFirstFramesSeen);
     cliPrintLinef("IBUS2 RX first-frame crc ok: %u", ibus2RxDbgFirstFramesCrcOk);
     cliPrintLinef("IBUS2 RX first-frame crc fail: %u", ibus2RxDbgFirstFramesCrcFail);
+    cliPrintLinef("IBUS2 RX hdr hits / len rej / addr rej: %u/%u/%u", ibus2RxDbgHeaderMatch, ibus2RxDbgLengthMismatch, ibus2RxDbgAddressMismatch);
     cliPrintLinef("IBUS2 RX 2nd-frame bytes skipped: %u", ibus2RxDbgSecondFramesSkipped);
     cliPrintLinef("IBUS2 RX subtype seen (0/1/2): %u/%u/%u", ibus2RxDbgSubtype0Seen, ibus2RxDbgSubtype1Seen, ibus2RxDbgSubtype2Seen);
     cliPrintLinef("IBUS2 RX decode ok/fail: %u/%u", ibus2RxDbgDecodeOk, ibus2RxDbgDecodeFail);
     cliPrintLinef("IBUS2 RX last hdr/len/sub: 0x%02X/%u/%u", ibus2RxDbgLastHeader, ibus2RxDbgLastLength, ibus2RxDbgLastSubtype);
     cliPrintLinef("IBUS2 RX last ch1-4: %u %u %u %u", ibus2RxDbgLastChannels[0], ibus2RxDbgLastChannels[1], ibus2RxDbgLastChannels[2], ibus2RxDbgLastChannels[3]);
+    if (haveUartDiag) {
+        cliPrintLinef("IBUS2 RX UART dma: %s", uartDiag.rxDmaConfigured ? "yes" : "no");
+        cliPrintLinef("IBUS2 RX UART FE/NE/ORE: %u/%u/%u", uartDiag.rxFrameErrorCount, uartDiag.rxNoiseErrorCount, uartDiag.rxOverrunErrorCount);
+    } else {
+        cliPrintLine("IBUS2 RX UART diag: unavailable");
+    }
 #endif
     cliPrintLinef("IBUS2 tx: %u", ibus2DbgTxCount);
     cliPrintLinef("IBUS2 last hdr raw: 0x%02X", ibus2DbgLastHeaderRaw);
@@ -6264,6 +6278,7 @@ static void cliIbus2TelemetryFrame(const char *cmdName, char *cmdline)
 #ifdef USE_SERIALRX_IBUS
     extern uint8_t ibus2RxDbgLastLength;
     extern uint8_t ibus2RxDbgLastFirstFrame[37];
+    extern uint8_t ibus2RxDbgLastFailedCandidate[37];
 #endif
     cliPrintLine("IBUS2 last RX frame:");
     for (int i = 0; i < 21; i++) {
@@ -6274,6 +6289,11 @@ static void cliIbus2TelemetryFrame(const char *cmdName, char *cmdline)
     cliPrintLinef("IBUS2 last first frame (len=%u):", ibus2RxDbgLastLength);
     for (int i = 0; i < 37; i++) {
         cliPrintf("%02X ", ibus2RxDbgLastFirstFrame[i]);
+    }
+    cliPrintLinefeed();
+    cliPrintLine("IBUS2 last failed candidate:");
+    for (int i = 0; i < 37; i++) {
+        cliPrintf("%02X ", ibus2RxDbgLastFailedCandidate[i]);
     }
     cliPrintLinefeed();
 #endif

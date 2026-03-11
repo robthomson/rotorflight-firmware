@@ -330,7 +330,16 @@ void uartIrqHandler(uartPort_t *s)
     }
 
     if (USART_GetITStatus(s->USARTx, USART_IT_ORE) == SET) {
+        s->rxOverrunErrorCount++;
         USART_ClearITPendingBit(s->USARTx, USART_IT_ORE);
+    }
+
+    if (USART_GetFlagStatus(s->USARTx, USART_FLAG_NE) == SET) {
+        s->rxNoiseErrorCount++;
+    }
+
+    if (USART_GetFlagStatus(s->USARTx, USART_FLAG_FE) == SET) {
+        s->rxFrameErrorCount++;
     }
 
     if (USART_GetITStatus(s->USARTx, USART_IT_IDLE) == SET) {

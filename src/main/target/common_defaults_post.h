@@ -674,6 +674,15 @@
 #endif
 #endif
 
+#ifdef USE_LPUART1
+#ifndef LPUART1_TX_DMA_OPT
+#define LPUART1_TX_DMA_OPT (DMA_OPT_UNUSED)
+#endif
+#ifndef LPUART1_RX_DMA_OPT
+#define LPUART1_RX_DMA_OPT (DMA_OPT_UNUSED)
+#endif
+#endif
+
 #ifndef RTC6705_CS_PIN
 #define RTC6705_CS_PIN NONE
 #endif

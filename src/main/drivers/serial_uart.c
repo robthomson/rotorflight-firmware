@@ -137,10 +137,31 @@ serialPort_t *uartOpen(UARTDevice_e device, serialReceiveCallbackPtr rxCallback,
     uartPort->port.mode = mode;
     uartPort->port.baudRate = baudRate;
     uartPort->port.options = options;
+    uartPort->rxFrameErrorCount = 0;
+    uartPort->rxNoiseErrorCount = 0;
+    uartPort->rxOverrunErrorCount = 0;
 
     uartReconfigure(uartPort);
 
     return (serialPort_t *)uartPort;
+}
+
+bool uartGetPortDiagnostics(const serialPort_t *port, uartPortDiagnostics_t *diagnostics)
+{
+    if (!port || !diagnostics || port->vTable != uartVTable) {
+        return false;
+    }
+
+    const uartPort_t *uartPort = (const uartPort_t *)port;
+    diagnostics->rxFrameErrorCount = uartPort->rxFrameErrorCount;
+    diagnostics->rxNoiseErrorCount = uartPort->rxNoiseErrorCount;
+    diagnostics->rxOverrunErrorCount = uartPort->rxOverrunErrorCount;
+#ifdef USE_DMA
+    diagnostics->rxDmaConfigured = uartPort->rxDMAResource != NULL;
+#else
+    diagnostics->rxDmaConfigured = false;
+#endif
+    return true;
 }
 
 static void uartSetBaudRate(serialPort_t *instance, uint32_t baudRate)
@@ -327,7 +348,7 @@ void uartConfigureDma(uartDevice_t *uartdev)
     }
 
     if (serialUartConfig(device)->rxDmaopt != DMA_OPT_UNUSED) {
-        dmaChannelSpec = dmaGetChannelSpecByPeripheral(DMA_PERIPH_UART_RX, device, serialUartConfig(device)->txDmaopt);
+        dmaChannelSpec = dmaGetChannelSpecByPeripheral(DMA_PERIPH_UART_RX, device, serialUartConfig(device)->rxDmaopt);
         if (dmaChannelSpec) {
             uartPort->rxDMAResource = dmaChannelSpec->ref;
             uartPort->rxDMAChannel = dmaChannelSpec->channel;

@@ -351,16 +351,19 @@ FAST_IRQ_HANDLER void uartIrqHandler(uartPort_t *s)
 
     /* UART frame error interrupt occurred --------------------------------------*/
     if ((__HAL_UART_GET_IT(huart, UART_IT_FE) != RESET)) {
+        s->rxFrameErrorCount++;
         __HAL_UART_CLEAR_IT(huart, UART_CLEAR_FEF);
     }
 
     /* UART noise error interrupt occurred --------------------------------------*/
     if ((__HAL_UART_GET_IT(huart, UART_IT_NE) != RESET)) {
+        s->rxNoiseErrorCount++;
         __HAL_UART_CLEAR_IT(huart, UART_CLEAR_NEF);
     }
 
     /* UART Over-Run interrupt occurred -----------------------------------------*/
     if ((__HAL_UART_GET_IT(huart, UART_IT_ORE) != RESET)) {
+        s->rxOverrunErrorCount++;
         __HAL_UART_CLEAR_IT(huart, UART_CLEAR_OREF);
     }
 

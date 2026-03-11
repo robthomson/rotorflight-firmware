@@ -31,6 +31,10 @@
 #define IBUS2_DEFAULT_FIRST_FRAME_HEADER 0x00
 #define IBUS2_DEFAULT_FIRST_FRAME_LENGTH 31
 #define IBUS2_DEFAULT_FIRST_FRAME_ADDRESS 0x07
+// Protocol timing specifies 125 +/- 25us between the first and second packets.
+// Stay just below the documented minimum gap to avoid treating shorter IRQ jitter
+// or parser stalls as a new frame boundary.
+#define IBUS2_INTERFRAME_GAP_MIN_US 90
 
 typedef enum {
     IBUS2_HEADER_UNKNOWN = 0,
@@ -50,6 +54,7 @@ static bool ibus2FrameFailsafe = false;
 static bool ibus2FrameSyncLost = false;
 static timeUs_t ibus2LastFrameTimeUs = 0;
 static bool ibus2FeedSharedTelemetry = false;
+static serialPort_t *ibus2RxSerialPort = NULL;
 static uint8_t ibus2ExpectedFirstFrameLength = 0;
 static uint8_t ibus2ExpectedFirstFrameHeader = 0xFF;
 static uint8_t ibus2ExpectedFirstFrameAddress = 0xFF;
@@ -61,6 +66,9 @@ uint32_t ibus2RxDbgBytes = 0;
 uint32_t ibus2RxDbgFirstFramesSeen = 0;
 uint32_t ibus2RxDbgFirstFramesCrcOk = 0;
 uint32_t ibus2RxDbgFirstFramesCrcFail = 0;
+uint32_t ibus2RxDbgHeaderMatch = 0;
+uint32_t ibus2RxDbgLengthMismatch = 0;
+uint32_t ibus2RxDbgAddressMismatch = 0;
 uint32_t ibus2RxDbgSecondFramesSkipped = 0;
 uint32_t ibus2RxDbgSubtype0Seen = 0;
 uint32_t ibus2RxDbgSubtype1Seen = 0;
@@ -71,6 +79,7 @@ uint8_t ibus2RxDbgLastHeader = 0;
 uint8_t ibus2RxDbgLastLength = 0;
 uint8_t ibus2RxDbgLastSubtype = 0;
 uint8_t ibus2RxDbgLastFirstFrame[IBUS2_FIRST_FRAME_MAX_LEN] = { 0 };
+uint8_t ibus2RxDbgLastFailedCandidate[IBUS2_FIRST_FRAME_MAX_LEN] = { 0 };
 uint16_t ibus2RxDbgLastChannels[4] = { 0 };
 
 static uint8_t ibus2Crc8Msb(const uint8_t *data, size_t len)
@@ -326,11 +335,12 @@ static bool ibus2HeaderMatchesLock(uint8_t byte)
 
 static void ibus2ProcessByte(uint8_t byte)
 {
-    static uint8_t rollingBuf[IBUS2_FIRST_FRAME_MAX_LEN];
-    static uint8_t rollingWritePos = 0;
-    static uint8_t rollingCount = 0;
-    static uint8_t bytesToSkipAfterFirstFrame = 0;
     static uint8_t candidateFrame[IBUS2_FIRST_FRAME_MAX_LEN];
+    static uint8_t candidateIdx = 0;
+    static uint8_t candidateLen = 0;
+    static timeUs_t lastByteTimeUs = 0;
+    static bool awaitingFrameStart = true;
+    const timeUs_t nowUs = microsISR();
 
     ibus2RxDbgBytes++;
 #if defined(USE_TELEMETRY_IBUS)
@@ -339,62 +349,84 @@ static void ibus2ProcessByte(uint8_t byte)
     }
 #endif
 
-    if (bytesToSkipAfterFirstFrame > 0) {
-        bytesToSkipAfterFirstFrame--;
-        ibus2RxDbgSecondFramesSkipped++;
+    // The protocol specifies an inter-frame idle gap of roughly 125us between
+    // the first and second packets. Use that gap to identify the start of a
+    // new packet instead of sliding a CRC window through payload bytes.
+    if (lastByteTimeUs && cmpTimeUs(nowUs, lastByteTimeUs) > IBUS2_INTERFRAME_GAP_MIN_US) {
+        candidateIdx = 0;
+        candidateLen = 0;
+        awaitingFrameStart = true;
+    }
+    lastByteTimeUs = nowUs;
+
+    if (candidateIdx == 0) {
+        if (!awaitingFrameStart) {
+            return;
+        }
+        if (!ibus2HeaderMatchesLock(byte)) {
+            return;
+        }
+        ibus2RxDbgHeaderMatch++;
+        candidateFrame[candidateIdx++] = byte;
+        awaitingFrameStart = false;
         return;
     }
 
-    const uint8_t frameLength = ibus2ExpectedFirstFrameLength;
-    if (frameLength < IBUS2_FIRST_FRAME_MIN_LEN || frameLength > IBUS2_FIRST_FRAME_MAX_LEN) {
+    if (candidateIdx == 1) {
+        if (byte < IBUS2_FIRST_FRAME_MIN_LEN || byte > IBUS2_FIRST_FRAME_MAX_LEN || byte != ibus2ExpectedFirstFrameLength) {
+            ibus2RxDbgLengthMismatch++;
+            candidateIdx = 0;
+            candidateLen = 0;
+            awaitingFrameStart = false;
+            return;
+        }
+        candidateLen = byte;
+        candidateFrame[candidateIdx++] = byte;
         return;
     }
 
-    rollingBuf[rollingWritePos] = byte;
-    rollingWritePos = (rollingWritePos + 1U) % IBUS2_FIRST_FRAME_MAX_LEN;
-    if (rollingCount < IBUS2_FIRST_FRAME_MAX_LEN) {
-        rollingCount++;
-    }
-
-    if (rollingCount < frameLength) {
+    if (candidateIdx == 2) {
+        const bool validAddressFlags = (byte & 0xC0) == 0;
+        const bool addressMatchesLock = (ibus2ExpectedFirstFrameAddress == 0xFF) || (byte == ibus2ExpectedFirstFrameAddress);
+        if (!validAddressFlags || !addressMatchesLock) {
+            ibus2RxDbgAddressMismatch++;
+            candidateIdx = 0;
+            candidateLen = 0;
+            awaitingFrameStart = false;
+            return;
+        }
+        candidateFrame[candidateIdx++] = byte;
         return;
     }
 
-    const uint8_t windowStart = (rollingWritePos + IBUS2_FIRST_FRAME_MAX_LEN - frameLength) % IBUS2_FIRST_FRAME_MAX_LEN;
-    const uint8_t header = rollingBuf[windowStart];
-    if (!ibus2HeaderMatchesLock(header)) {
+    if (candidateIdx >= IBUS2_FIRST_FRAME_MAX_LEN || candidateLen == 0) {
+        candidateIdx = 0;
+        candidateLen = 0;
+        awaitingFrameStart = false;
         return;
     }
 
-    const uint8_t lenByte = rollingBuf[(windowStart + 1U) % IBUS2_FIRST_FRAME_MAX_LEN];
-    if (lenByte != frameLength) {
+    candidateFrame[candidateIdx++] = byte;
+
+    if (candidateIdx < candidateLen) {
         return;
     }
 
-    const uint8_t address = rollingBuf[(windowStart + 2U) % IBUS2_FIRST_FRAME_MAX_LEN];
-    const bool validAddressFlags = (address & 0xC0) == 0;
-    const bool addressMatchesLock = (ibus2ExpectedFirstFrameAddress == 0xFF) || (address == ibus2ExpectedFirstFrameAddress);
-    if (!validAddressFlags || !addressMatchesLock) {
-        return;
-    }
-
-    for (uint8_t i = 0; i < frameLength; i++) {
-        candidateFrame[i] = rollingBuf[(windowStart + i) % IBUS2_FIRST_FRAME_MAX_LEN];
-    }
-
-    if (ibus2CrcOk(candidateFrame, frameLength)) {
-        const timeUs_t nowUs = microsISR();
+    if (ibus2CrcOk(candidateFrame, candidateLen)) {
         ibus2RxDbgFirstFramesCrcOk++;
-        ibus2ExpectedFirstFrameLength = frameLength;
+        ibus2ExpectedFirstFrameLength = candidateLen;
         ibus2ExpectedFirstFrameHeader = candidateFrame[0];
         ibus2ExpectedFirstFrameAddress = candidateFrame[2];
-        processFirstFrame(candidateFrame, frameLength, nowUs);
-
-        // Keep skip counter wired in for debug continuity, but do not skip in RX control parsing path.
-        bytesToSkipAfterFirstFrame = 0;
+        processFirstFrame(candidateFrame, candidateLen, nowUs);
     } else {
         ibus2RxDbgFirstFramesCrcFail++;
+        memset(ibus2RxDbgLastFailedCandidate, 0, sizeof(ibus2RxDbgLastFailedCandidate));
+        memcpy(ibus2RxDbgLastFailedCandidate, candidateFrame, candidateLen);
     }
+
+    candidateIdx = 0;
+    candidateLen = 0;
+    awaitingFrameStart = false;
 }
 
 // Receive ISR callback
@@ -448,6 +480,7 @@ bool ibus2Init(const rxConfig_t *rxConfig, rxRuntimeState_t *rxRuntimeState)
     ibus2FrameSyncLost = false;
     ibus2LastFrameTimeUs = 0;
     ibus2FeedSharedTelemetry = false;
+    ibus2RxSerialPort = NULL;
     ibus2ExpectedFirstFrameLength = IBUS2_DEFAULT_FIRST_FRAME_LENGTH;
     ibus2ExpectedFirstFrameHeader = IBUS2_DEFAULT_FIRST_FRAME_HEADER;
     ibus2ExpectedFirstFrameAddress = IBUS2_DEFAULT_FIRST_FRAME_ADDRESS;
@@ -456,6 +489,9 @@ bool ibus2Init(const rxConfig_t *rxConfig, rxRuntimeState_t *rxRuntimeState)
     ibus2RxDbgFirstFramesSeen = 0;
     ibus2RxDbgFirstFramesCrcOk = 0;
     ibus2RxDbgFirstFramesCrcFail = 0;
+    ibus2RxDbgHeaderMatch = 0;
+    ibus2RxDbgLengthMismatch = 0;
+    ibus2RxDbgAddressMismatch = 0;
     ibus2RxDbgSecondFramesSkipped = 0;
     ibus2RxDbgSubtype0Seen = 0;
     ibus2RxDbgSubtype1Seen = 0;
@@ -466,6 +502,7 @@ bool ibus2Init(const rxConfig_t *rxConfig, rxRuntimeState_t *rxRuntimeState)
     ibus2RxDbgLastLength = 0;
     ibus2RxDbgLastSubtype = 0;
     memset(ibus2RxDbgLastFirstFrame, 0, sizeof(ibus2RxDbgLastFirstFrame));
+    memset(ibus2RxDbgLastFailedCandidate, 0, sizeof(ibus2RxDbgLastFailedCandidate));
     memset(ibus2RxDbgLastChannels, 0, sizeof(ibus2RxDbgLastChannels));
 
     for (uint8_t i = 0; i < MAX_SUPPORTED_RC_CHANNEL_COUNT; i++) {
@@ -489,12 +526,14 @@ bool ibus2Init(const rxConfig_t *rxConfig, rxRuntimeState_t *rxRuntimeState)
         ibus2DataReceive,
         NULL,
         IBUS2_BAUDRATE,
-        portShared ? MODE_RXTX : MODE_RX,
+        (rxConfig->halfDuplex || portShared) ? MODE_RXTX : MODE_RX,
         SERIAL_STOPBITS_1 | SERIAL_PARITY_NO |
             (rxConfig->serialrx_inverted ? SERIAL_INVERTED : SERIAL_NOT_INVERTED) |
             (rxConfig->halfDuplex || portShared ? SERIAL_BIDIR : SERIAL_UNIDIR) |
             (rxConfig->pinSwap ? SERIAL_PINSWAP : SERIAL_NOSWAP)
     );
+
+    ibus2RxSerialPort = ibusPort;
 
 #ifdef USE_TELEMETRY
     if (portShared && ibusPort) {
@@ -507,6 +546,11 @@ bool ibus2Init(const rxConfig_t *rxConfig, rxRuntimeState_t *rxRuntimeState)
 #endif
 
     return ibusPort != NULL;
+}
+
+serialPort_t *ibus2GetRxSerialPort(void)
+{
+    return ibus2RxSerialPort;
 }
 
 #endif
