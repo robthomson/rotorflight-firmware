@@ -6224,6 +6224,9 @@ static void cliIbus2TelemetryInfo(const char *cmdName, char *cmdline)
     extern uint8_t ibus2RxDbgLastHeader;
     extern uint8_t ibus2RxDbgLastLength;
     extern uint8_t ibus2RxDbgLastSubtype;
+    extern uint8_t ibus2RxDbgSharedTelemetry;
+    extern uint8_t ibus2RxDbgAwaitingCommand;
+    extern uint8_t ibus2RxDbgLastSkippedByte;
     extern uint16_t ibus2RxDbgLastChannels[4];
     uartPortDiagnostics_t uartDiag;
     const bool haveUartDiag = uartGetPortDiagnostics(ibus2GetRxSerialPort(), &uartDiag);
@@ -6250,6 +6253,7 @@ static void cliIbus2TelemetryInfo(const char *cmdName, char *cmdline)
     cliPrintLinef("IBUS2 RX first-frame crc fail: %u", ibus2RxDbgFirstFramesCrcFail);
     cliPrintLinef("IBUS2 RX hdr hits / len rej / addr rej: %u/%u/%u", ibus2RxDbgHeaderMatch, ibus2RxDbgLengthMismatch, ibus2RxDbgAddressMismatch);
     cliPrintLinef("IBUS2 RX 2nd-frame bytes skipped: %u", ibus2RxDbgSecondFramesSkipped);
+    cliPrintLinef("IBUS2 RX shared/await/skip: %u/%u/0x%02X", ibus2RxDbgSharedTelemetry, ibus2RxDbgAwaitingCommand, ibus2RxDbgLastSkippedByte);
     cliPrintLinef("IBUS2 RX subtype seen (0/1/2): %u/%u/%u", ibus2RxDbgSubtype0Seen, ibus2RxDbgSubtype1Seen, ibus2RxDbgSubtype2Seen);
     cliPrintLinef("IBUS2 RX decode ok/fail: %u/%u", ibus2RxDbgDecodeOk, ibus2RxDbgDecodeFail);
     cliPrintLinef("IBUS2 RX last hdr/len/sub: 0x%02X/%u/%u", ibus2RxDbgLastHeader, ibus2RxDbgLastLength, ibus2RxDbgLastSubtype);

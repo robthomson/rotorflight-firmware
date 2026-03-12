@@ -14,3 +14,4 @@ void freeIbus2TelemetryPort(void);
 
 void initSharedIbus2Telemetry(serialPort_t *port);
 void ibus2ProcessRxByte(uint8_t c);
+uint8_t ibus2HandleSharedCommandFrame(const uint8_t *frame);

@@ -9,6 +9,7 @@
 #include "common/utils.h"
 
 #include "drivers/serial.h"
+#include "drivers/time.h"
 
 #include "io/serial.h"
 
@@ -25,7 +26,6 @@
 #include "rx/rx.h"
 
 #define IBUS2_TASK_PERIOD_US (1000)
-
 #define IBUS2_UART_MODE     (MODE_RXTX)
 #define IBUS2_BAUDRATE      (1500000)
 
@@ -61,7 +61,6 @@
 // Data format
 #define IBUS2_FMT_1DP (1)
 
-// Device type (appendix suggests digital servo; use as generic)
 #define IBUS2_DEVICE_TYPE_DIGITAL_SERVO (0xF8)
 
 
@@ -132,7 +131,7 @@ static uint8_t ibus2CommandWindow[IBUS2_FRAME_LEN] = { 0 };
 static uint8_t ibus2CommandWindowCount = 0;
 
 static uint8_t ibus2AdvertisedResources(void);
-static void handleCommandFrame(const uint8_t *frame);
+static uint8_t handleCommandFrame(const uint8_t *frame, bool accountRxEcho);
 
 
 static void pushOntoTail(uint8_t *buffer, size_t bufferLength, uint8_t value)
@@ -257,21 +256,24 @@ static void buildResponseHeader(uint8_t *frame, uint8_t commandCode)
 }
 
 
-static void sendResponse(const uint8_t *frame, size_t len)
+static uint8_t sendResponse(const uint8_t *frame, size_t len, bool accountRxEcho)
 {
     if (!ibus2SerialPort) {
-        return;
+        return 0;
     }
     serialWriteBuf(ibus2SerialPort, frame, len);
     if (len == IBUS2_FRAME_LEN) {
         memcpy(ibus2DbgLastTxFrame, frame, IBUS2_FRAME_LEN);
     }
-    outboundBytesToIgnoreOnRxCount += len;
+    if (accountRxEcho) {
+        outboundBytesToIgnoreOnRxCount += len;
+    }
     ibus2DbgTxCount++;
+    return (uint8_t)len;
 }
 
 
-static void respondGetParam(const uint8_t *request)
+static uint8_t respondGetParam(const uint8_t *request, bool accountRxEcho)
 {
     uint8_t response[IBUS2_FRAME_LEN] = { 0 };
     const uint16_t paramType = getParamType(request);
@@ -285,10 +287,10 @@ static void respondGetParam(const uint8_t *request)
     response[3] = 0;
 
     response[IBUS2_FRAME_LEN - 1] = ibus2CrcCompute(response, IBUS2_FRAME_LEN - IBUS2_CRC_SIZE);
-    sendResponse(response, IBUS2_FRAME_LEN);
+    return sendResponse(response, IBUS2_FRAME_LEN, accountRxEcho);
 }
 
-static void respondGetType(void)
+static uint8_t respondGetType(bool accountRxEcho)
 {
     uint8_t response[IBUS2_FRAME_LEN] = { 0 };
 
@@ -299,11 +301,11 @@ static void respondGetType(void)
     response[3] = ibus2AdvertisedResources();
 
     response[IBUS2_FRAME_LEN - 1] = ibus2CrcCompute(response, IBUS2_FRAME_LEN - IBUS2_CRC_SIZE);
-    sendResponse(response, IBUS2_FRAME_LEN);
+    return sendResponse(response, IBUS2_FRAME_LEN, accountRxEcho);
 }
 
 
-static void respondSetParam(const uint8_t *request)
+static uint8_t respondSetParam(const uint8_t *request, bool accountRxEcho)
 {
     uint8_t response[IBUS2_FRAME_LEN] = { 0 };
     const uint16_t paramType = getParamType(request);
@@ -316,11 +318,11 @@ static void respondSetParam(const uint8_t *request)
     response[3] = 0;
 
     response[IBUS2_FRAME_LEN - 1] = ibus2CrcCompute(response, IBUS2_FRAME_LEN - IBUS2_CRC_SIZE);
-    sendResponse(response, IBUS2_FRAME_LEN);
+    return sendResponse(response, IBUS2_FRAME_LEN, accountRxEcho);
 }
 
 
-static void respondGetValue(void)
+static uint8_t respondGetValue(bool accountRxEcho)
 {
     uint8_t response[IBUS2_FRAME_LEN] = { 0 };
     uint8_t value[14];
@@ -343,7 +345,7 @@ static void respondGetValue(void)
     response[16] = IBUS2_PID;
 
     response[IBUS2_FRAME_LEN - 1] = ibus2CrcCompute(response, IBUS2_FRAME_LEN - IBUS2_CRC_SIZE);
-    sendResponse(response, IBUS2_FRAME_LEN);
+    return sendResponse(response, IBUS2_FRAME_LEN, accountRxEcho);
 }
 
 static bool decodeHeader(uint8_t raw, uint8_t *packetType, uint8_t *commandCode)
@@ -440,7 +442,7 @@ static bool isResponseWorthyCommand(uint8_t commandCode)
     }
 }
 
-static void respondUnknownCommand(const uint8_t *request, uint8_t commandCode)
+static uint8_t respondUnknownCommand(const uint8_t *request, uint8_t commandCode, bool accountRxEcho)
 {
     uint8_t response[IBUS2_FRAME_LEN] = { 0 };
 
@@ -449,7 +451,7 @@ static void respondUnknownCommand(const uint8_t *request, uint8_t commandCode)
     memcpy(&response[1], &request[1], IBUS2_FRAME_LEN - 2);
 
     response[IBUS2_FRAME_LEN - 1] = ibus2CrcCompute(response, IBUS2_FRAME_LEN - IBUS2_CRC_SIZE);
-    sendResponse(response, IBUS2_FRAME_LEN);
+    return sendResponse(response, IBUS2_FRAME_LEN, accountRxEcho);
 }
 
 static bool isPacketTypeWithLayout(uint8_t raw, ibus2HeaderLayout_e layout, uint8_t packetType)
@@ -533,7 +535,7 @@ static bool handleIbus2CommandFrameIfValid(const uint8_t *frame)
         ibus2DbgLastPacketType = packetType;
         ibus2DbgLastCommandCode = commandCode;
     }
-    handleCommandFrame(frame);
+    handleCommandFrame(frame, true);
 
     return true;
 }
@@ -679,22 +681,22 @@ static bool parseRollingCommandByte(uint8_t c)
 
 static uint8_t ibus2AdvertisedResources(void)
 {
-#ifdef USE_SERIALRX_IBUS
-    return ibus2GetRequiredResources();
-#else
+    // For the FC telemetry endpoint, do not request extra RX-side resources
+    // such as ChannelsTypes/Failsafe. The RX path already has a working fallback
+    // decoder, and advertising extra requirements appears to stall the sender
+    // at repeated GET_TYPE polling.
     return 0;
-#endif
 }
 
 
-static void handleCommandFrame(const uint8_t *frame)
+static uint8_t handleCommandFrame(const uint8_t *frame, bool accountRxEcho)
 {
     uint8_t packetType = 0;
     uint8_t commandCode = 0;
     decodeHeader(frame[0], &packetType, &commandCode);
 
     if (packetType != IBUS2_PACKET_TYPE_COMMAND) {
-        return;
+        return 0;
     }
 
     if (commandCode == IBUS2_CMD_GET_TYPE) {
@@ -712,23 +714,21 @@ static void handleCommandFrame(const uint8_t *frame)
     if (isResponseWorthyCommand(commandCode)) {
         switch (commandCode) {
         case IBUS2_CMD_GET_TYPE:
-            respondGetType();
-            break;
+            return respondGetType(accountRxEcho);
         case IBUS2_CMD_GET_VALUE:
-            respondGetValue();
-            break;
+            return respondGetValue(accountRxEcho);
         case IBUS2_CMD_GET_PARAM:
-            respondGetParam(frame);
-            break;
+            return respondGetParam(frame, accountRxEcho);
         case IBUS2_CMD_SET_PARAM:
-            respondSetParam(frame);
-            break;
+            return respondSetParam(frame, accountRxEcho);
         default:
-            break;
+            return 0;
         }
     } else {
-        respondUnknownCommand(frame, commandCode);
+        return respondUnknownCommand(frame, commandCode, accountRxEcho);
     }
+
+    return 0;
 }
 
 
@@ -859,6 +859,15 @@ void ibus2ProcessRxByte(uint8_t c)
     DEBUG_SET(DEBUG_TTA, 1, ibus2DbgNonZeroBytes);
     DEBUG_SET(DEBUG_TTA, 2, ibus2DbgCrcOk);
     DEBUG_SET(DEBUG_TTA, 3, ibus2DbgTxCount);
+}
+
+uint8_t ibus2HandleSharedCommandFrame(const uint8_t *frame)
+{
+    if (!ibus2TelemetryEnabled || !ibus2SerialPort) {
+        return 0;
+    }
+
+    return handleCommandFrame(frame, false);
 }
 
 #endif

@@ -11,6 +11,8 @@
 
 #include "io/serial.h"
 
+#include "config/feature.h"
+
 #include "pg/serial.h"
 
 #include "rx/ibus2.h"
@@ -26,6 +28,7 @@
 #define IBUS2_BAUDRATE 1500000
 #define IBUS2_FIRST_FRAME_MIN_LEN 4
 #define IBUS2_FIRST_FRAME_MAX_LEN 37
+#define IBUS2_COMMAND_FRAME_LEN 21
 #define IBUS2_BASE_CHANNEL_COUNT 18
 #define IBUS2_CHANNEL_COUNT 32
 #define IBUS2_CHANNEL_TYPES_LENGTH 20
@@ -33,12 +36,14 @@
 #define IBUS2_CHANNEL_RANGE_150 ((IBUS2_CHANNEL_RANGE_100 * 150) / 100)
 #define IBUS2_REQUIRED_RESOURCE_CHANNEL_TYPES (1U << 0)
 #define IBUS2_REQUIRED_RESOURCE_FAILSAFE      (1U << 1)
+#define IBUS2_PACKET_TYPE_COMMAND 1
 #define IBUS2_HEADER_PACKET_TYPE_MASK 0x03
 #define IBUS2_HEADER_SUBTYPE_MASK 0x3C
 #define IBUS2_HEADER_SYNC_LOST_MASK 0x40
 #define IBUS2_HEADER_FAILSAFE_MASK 0x80
 #define IBUS2_ADDRESS_RESERVED_MASK 0xC0
 #define IBUS2_INTERFRAME_GAP_MIN_US 70
+#define IBUS2_SHARED_RESPONSE_DELAY_US 160
 #define IBUS2_CHANNEL_TYPE_BITS 5
 #define IBUS2_CHANNEL_TYPE_BITS_MASK 0x0F
 #define IBUS2_KEEP_FAILSAFE_CHANNEL (-32768)
@@ -59,7 +64,11 @@ static bool ibus2FrameFailsafe = false;
 static bool ibus2FrameSyncLost = false;
 static timeUs_t ibus2LastFrameTimeUs = 0;
 static bool ibus2FeedSharedTelemetry = false;
+static bool ibus2AwaitingCommandFrame = false;
 static serialPort_t *ibus2RxSerialPort = NULL;
+static uint16_t ibus2RxBytesToIgnore = 0;
+static bool ibus2PendingSharedCommand = false;
+static timeUs_t ibus2PendingSharedCommandAtUs = 0;
 static uint8_t ibus2RequiredResources = IBUS2_REQUIRED_RESOURCE_CHANNEL_TYPES;
 static uint8_t ibus2ChannelTypes[IBUS2_CHANNEL_TYPES_LENGTH + 1];
 static bool ibus2HaveChannelTypes = false;
@@ -86,6 +95,9 @@ uint32_t ibus2RxDbgDecodeFail = 0;
 uint8_t ibus2RxDbgLastHeader = 0;
 uint8_t ibus2RxDbgLastLength = 0;
 uint8_t ibus2RxDbgLastSubtype = 0;
+uint8_t ibus2RxDbgSharedTelemetry = 0;
+uint8_t ibus2RxDbgAwaitingCommand = 0;
+uint8_t ibus2RxDbgLastSkippedByte = 0;
 uint8_t ibus2RxDbgLastFirstFrame[IBUS2_FIRST_FRAME_MAX_LEN] = { 0 };
 uint8_t ibus2RxDbgLastFailedCandidate[IBUS2_FIRST_FRAME_MAX_LEN] = { 0 };
 uint16_t ibus2RxDbgLastChannels[4] = { 0 };
@@ -98,9 +110,16 @@ typedef struct {
     timeUs_t lastByteTimeUs;
 } ibus2FrameParser_t;
 
+typedef struct {
+    uint8_t buf[IBUS2_COMMAND_FRAME_LEN];
+    uint8_t idx;
+} ibus2CommandParser_t;
+
 static ibus2FrameParser_t ibus2FrameParser = {
     .allowStart = true
 };
+static ibus2CommandParser_t ibus2CommandParser = { 0 };
+static uint8_t ibus2PendingCommandFrame[IBUS2_COMMAND_FRAME_LEN] = { 0 };
 
 static uint8_t ibus2Crc8(const uint8_t *data, size_t len)
 {
@@ -144,6 +163,7 @@ static void ibus2ResetFrameParser(void)
     ibus2FrameParser.expectedLen = 0;
     ibus2FrameParser.allowStart = true;
     ibus2FrameParser.lastByteTimeUs = 0;
+    ibus2CommandParser.idx = 0;
 }
 
 static void ibus2ResetState(void)
@@ -153,7 +173,11 @@ static void ibus2ResetState(void)
     ibus2FrameSyncLost = false;
     ibus2LastFrameTimeUs = 0;
     ibus2FeedSharedTelemetry = false;
+    ibus2AwaitingCommandFrame = false;
     ibus2RxSerialPort = NULL;
+    ibus2RxBytesToIgnore = 0;
+    ibus2PendingSharedCommand = false;
+    ibus2PendingSharedCommandAtUs = 0;
     ibus2RequiredResources = IBUS2_REQUIRED_RESOURCE_CHANNEL_TYPES;
     ibus2HaveChannelTypes = false;
     ibus2HavePackedChannels = false;
@@ -185,6 +209,9 @@ static void ibus2ResetState(void)
     ibus2RxDbgLastHeader = 0;
     ibus2RxDbgLastLength = 0;
     ibus2RxDbgLastSubtype = 0;
+    ibus2RxDbgSharedTelemetry = 0;
+    ibus2RxDbgAwaitingCommand = 0;
+    ibus2RxDbgLastSkippedByte = 0;
 }
 
 static void SES_UnpackChannels(const uint8_t *packedChannels, int16_t *channelsOut, uint8_t channelCount, const uint8_t *channelsType)
@@ -257,6 +284,12 @@ static uint32_t ibus2ExtractBitsLE(const uint8_t *data, size_t bitOffset, uint8_
 static int16_t ibus2SignExtend12(uint16_t value)
 {
     return (value & 0x0800U) ? (int16_t)(value | 0xF000U) : (int16_t)value;
+}
+
+static bool ibus2IsPotentialCommandHeader(uint8_t byte)
+{
+    return ((byte & IBUS2_HEADER_PACKET_TYPE_MASK) == IBUS2_PACKET_TYPE_COMMAND) ||
+        ((((byte >> 6) & IBUS2_HEADER_PACKET_TYPE_MASK) == IBUS2_PACKET_TYPE_COMMAND));
 }
 
 static uint16_t ibus2ConvertChannelToUs(int16_t channelValue, uint16_t currentValue)
@@ -353,6 +386,7 @@ static void ibus2StoreFailedFrame(const uint8_t *frame, size_t frameLen)
 
 static void ibus2ProcessFirstFrame(const uint8_t *frame, size_t frameLen, timeUs_t nowUs)
 {
+    ibus2AwaitingCommandFrame = false;
     ibus2RxDbgFirstFramesSeen++;
     ibus2RxDbgLastHeader = frame[0];
     ibus2RxDbgLastLength = frameLen > 1 ? frame[1] : 0;
@@ -381,6 +415,7 @@ static void ibus2ProcessFirstFrame(const uint8_t *frame, size_t frameLen, timeUs
     }
 
     ibus2RxDbgFirstFramesCrcOk++;
+    ibus2AwaitingCommandFrame = ibus2FeedSharedTelemetry;
 
     const uint8_t packetSubtype = (frame[0] & IBUS2_HEADER_SUBTYPE_MASK) >> 2;
     const bool syncLost = (frame[0] & IBUS2_HEADER_SYNC_LOST_MASK) != 0;
@@ -451,20 +486,47 @@ static void ibus2ProcessByte(uint8_t byte)
 {
     const timeUs_t nowUs = microsISR();
 
-    ibus2RxDbgBytes++;
+    ibus2RxDbgSharedTelemetry = ibus2FeedSharedTelemetry ? 1 : 0;
+    ibus2RxDbgAwaitingCommand = ibus2AwaitingCommandFrame ? 1 : 0;
 
-#if defined(USE_TELEMETRY_IBUS)
-    if (ibus2FeedSharedTelemetry) {
-        ibus2ProcessRxByte(byte);
+    if (ibus2RxBytesToIgnore) {
+        ibus2RxBytesToIgnore--;
+        return;
     }
-#endif
+
+    ibus2RxDbgBytes++;
 
     if (ibus2FrameParser.lastByteTimeUs &&
         cmpTimeUs(nowUs, ibus2FrameParser.lastByteTimeUs) > IBUS2_INTERFRAME_GAP_MIN_US) {
         ibus2FinalizePendingFrame(nowUs);
+        ibus2CommandParser.idx = 0;
         ibus2FrameParser.allowStart = true;
     }
     ibus2FrameParser.lastByteTimeUs = nowUs;
+
+#if defined(USE_TELEMETRY_IBUS)
+    if (ibus2FeedSharedTelemetry && ibus2AwaitingCommandFrame && ibus2CommandParser.idx == 0 &&
+        ibus2IsPotentialCommandHeader(byte)) {
+        ibus2CommandParser.buf[ibus2CommandParser.idx++] = byte;
+        ibus2AwaitingCommandFrame = false;
+        ibus2RxDbgAwaitingCommand = 0;
+        return;
+    }
+
+    if (ibus2CommandParser.idx > 0) {
+        if (ibus2CommandParser.idx < sizeof(ibus2CommandParser.buf)) {
+            ibus2CommandParser.buf[ibus2CommandParser.idx++] = byte;
+        }
+
+        if (ibus2CommandParser.idx >= sizeof(ibus2CommandParser.buf)) {
+            memcpy(ibus2PendingCommandFrame, ibus2CommandParser.buf, sizeof(ibus2PendingCommandFrame));
+            ibus2PendingSharedCommand = true;
+            ibus2PendingSharedCommandAtUs = nowUs;
+            ibus2CommandParser.idx = 0;
+        }
+        return;
+    }
+#endif
 
     if (ibus2FrameParser.idx == 0) {
         if (!ibus2FrameParser.allowStart) {
@@ -472,9 +534,11 @@ static void ibus2ProcessByte(uint8_t byte)
         }
         if ((byte & IBUS2_HEADER_PACKET_TYPE_MASK) != 0) {
             ibus2RxDbgSecondFramesSkipped++;
+            ibus2RxDbgLastSkippedByte = byte;
             ibus2FrameParser.allowStart = false;
             return;
         }
+        ibus2AwaitingCommandFrame = false;
         ibus2RxDbgHeaderMatch++;
         ibus2FrameParser.buf[ibus2FrameParser.idx++] = byte;
         return;
@@ -516,6 +580,9 @@ static uint8_t ibus2FrameStatus(rxRuntimeState_t *rxRuntimeState)
     uint8_t frameStatus = RX_FRAME_PENDING;
 
     if (!ibus2FrameDone) {
+        if (ibus2PendingSharedCommand) {
+            frameStatus |= RX_FRAME_PROCESSING_REQUIRED;
+        }
         return frameStatus;
     }
 
@@ -530,6 +597,11 @@ static uint8_t ibus2FrameStatus(rxRuntimeState_t *rxRuntimeState)
     }
 
     rxRuntimeState->lastRcFrameTimeUs = ibus2LastFrameTimeUs;
+
+    if (ibus2PendingSharedCommand) {
+        frameStatus |= RX_FRAME_PROCESSING_REQUIRED;
+    }
+
     return frameStatus;
 }
 
@@ -539,12 +611,33 @@ static float ibus2ReadRawRC(const rxRuntimeState_t *rxRuntimeState, uint8_t chan
     return ibus2ChannelData[chan];
 }
 
+static bool ibus2ProcessFrame(const rxRuntimeState_t *rxRuntimeState)
+{
+    UNUSED(rxRuntimeState);
+
+#if defined(USE_TELEMETRY_IBUS)
+    if (ibus2PendingSharedCommand) {
+        const timeUs_t nowUs = micros();
+        if (cmpTimeUs(nowUs, ibus2PendingSharedCommandAtUs) < IBUS2_SHARED_RESPONSE_DELAY_US) {
+            return false;
+        }
+
+        const uint8_t sent = ibus2HandleSharedCommandFrame(ibus2PendingCommandFrame);
+        ibus2PendingSharedCommand = false;
+        ibus2RxBytesToIgnore += sent;
+    }
+#endif
+
+    return true;
+}
+
 bool ibus2Init(const rxConfig_t *rxConfig, rxRuntimeState_t *rxRuntimeState)
 {
     rxRuntimeState->channelCount = IBUS2_BASE_CHANNEL_COUNT;
     rxRuntimeState->rxRefreshRate = 20000;
     rxRuntimeState->rcReadRawFn = ibus2ReadRawRC;
     rxRuntimeState->rcFrameStatusFn = ibus2FrameStatus;
+    rxRuntimeState->rcProcessFrameFn = ibus2ProcessFrame;
     rxRuntimeState->rcFrameTimeUsFn = rxFrameTimeUs;
 
     ibus2ResetState();
@@ -559,7 +652,8 @@ bool ibus2Init(const rxConfig_t *rxConfig, rxRuntimeState_t *rxRuntimeState)
     }
 
 #ifdef USE_TELEMETRY
-    bool portShared = telemetryCheckRxPortShared(portConfig, rxRuntimeState->serialrxProvider);
+    const bool telemetryFeatureEnabled = featureIsEnabled(FEATURE_TELEMETRY);
+    bool portShared = telemetryCheckRxPortShared(portConfig, rxRuntimeState->serialrxProvider) || telemetryFeatureEnabled;
 #else
     bool portShared = false;
 #endif
