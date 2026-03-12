@@ -19,6 +19,9 @@
 #include "telemetry/sensors.h"
 #include "build/debug.h"
 
+#ifdef USE_SERIALRX_IBUS
+#include "rx/ibus2.h"
+#endif
 #include "rx/rx.h"
 
 #define IBUS2_TASK_PERIOD_US (1000)
@@ -128,6 +131,7 @@ static ibus2ParseState_e ibus2ParseState = IBUS2_PARSE_SYNC_TO_FIRST_FRAME;
 static uint8_t ibus2CommandWindow[IBUS2_FRAME_LEN] = { 0 };
 static uint8_t ibus2CommandWindowCount = 0;
 
+static uint8_t ibus2AdvertisedResources(void);
 static void handleCommandFrame(const uint8_t *frame);
 
 
@@ -202,7 +206,7 @@ static void packValuePayload(uint8_t value[14],
 
 static uint8_t ibus2Crc8Msb(const uint8_t *data, size_t len)
 {
-    uint8_t crc = 0;
+    uint8_t crc = 0xFF;
     for (size_t i = 0; i < len; i++) {
         crc ^= data[i];
         for (int bit = 0; bit < 8; bit++) {
@@ -216,27 +220,8 @@ static uint8_t ibus2Crc8Msb(const uint8_t *data, size_t len)
     return crc;
 }
 
-static uint8_t ibus2Crc8Lsb(const uint8_t *data, size_t len)
-{
-    uint8_t crc = 0;
-    for (size_t i = 0; i < len; i++) {
-        crc ^= data[i];
-        for (int bit = 0; bit < 8; bit++) {
-            if (crc & 0x01) {
-                crc = (uint8_t)((crc >> 1) ^ 0xA4); // reflected poly of 0x25
-            } else {
-                crc >>= 1;
-            }
-        }
-    }
-    return crc;
-}
-
 static uint8_t ibus2CrcCompute(const uint8_t *data, size_t len)
 {
-    if (ibus2CrcMode == IBUS2_CRC_LSB) {
-        return ibus2Crc8Lsb(data, len);
-    }
     return ibus2Crc8Msb(data, len);
 }
 
@@ -250,11 +235,6 @@ static bool ibus2CrcOk(const uint8_t *frame, size_t frameLen)
     const uint8_t msb = ibus2Crc8Msb(frame, frameLen - IBUS2_CRC_SIZE);
     if (msb == expected) {
         ibus2CrcMode = IBUS2_CRC_MSB;
-        return true;
-    }
-    const uint8_t lsb = ibus2Crc8Lsb(frame, frameLen - IBUS2_CRC_SIZE);
-    if (lsb == expected) {
-        ibus2CrcMode = IBUS2_CRC_LSB;
         return true;
     }
     return false;
@@ -315,8 +295,8 @@ static void respondGetType(void)
     buildResponseHeader(response, IBUS2_CMD_GET_TYPE);
     response[1] = IBUS2_DEVICE_TYPE_DIGITAL_SERVO;
     response[2] = 16; // ValueLength
-    // Flags: ChannelsTypes, Failsafe, ReceiverInternalSensors, Reserved
-    response[3] = 0;
+    // RequiredResources bitfield: ChannelsTypes, Failsafe, ReceiverInternalSensors, Reserved
+    response[3] = ibus2AdvertisedResources();
 
     response[IBUS2_FRAME_LEN - 1] = ibus2CrcCompute(response, IBUS2_FRAME_LEN - IBUS2_CRC_SIZE);
     sendResponse(response, IBUS2_FRAME_LEN);
@@ -634,11 +614,9 @@ static bool isLikelyCommandFrame(const uint8_t *frame, ibus2HeaderLayout_e *layo
 {
     const uint8_t expected = frame[IBUS2_FRAME_LEN - 1];
     const uint8_t msb = ibus2Crc8Msb(frame, IBUS2_FRAME_LEN - IBUS2_CRC_SIZE);
-    const uint8_t lsb = ibus2Crc8Lsb(frame, IBUS2_FRAME_LEN - IBUS2_CRC_SIZE);
     const bool msbOk = (msb == expected);
-    const bool lsbOk = (lsb == expected);
 
-    if (!msbOk && !lsbOk) {
+    if (!msbOk) {
         return false;
     }
 
@@ -673,7 +651,7 @@ static bool isLikelyCommandFrame(const uint8_t *frame, ibus2HeaderLayout_e *layo
 
     if (bestLayout != IBUS2_HEADER_UNKNOWN) {
         *layout = bestLayout;
-        *crcMode = msbOk ? IBUS2_CRC_MSB : IBUS2_CRC_LSB;
+        *crcMode = IBUS2_CRC_MSB;
         return true;
     }
 
@@ -697,6 +675,15 @@ static bool parseRollingCommandByte(uint8_t c)
     ibus2HeaderLayout = layout;
     ibus2CrcMode = crcMode;
     return handleIbus2CommandFrameIfValid(ibus2CommandWindow);
+}
+
+static uint8_t ibus2AdvertisedResources(void)
+{
+#ifdef USE_SERIALRX_IBUS
+    return ibus2GetRequiredResources();
+#else
+    return 0;
+#endif
 }
 
 
