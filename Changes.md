@@ -158,6 +158,14 @@ New Rotorflight MSPv2 command (`0x4000`) to get the SmartFuel configuration.
 
 New Rotorflight MSPv2 command (`0x4001`) to set the SmartFuel configuration.
 
+### MSP_ESC_PARAMETERS_COMPACT
+
+New MSP command (224) to read ESC parameters in compact form. Equivalent to `MSP_ESC_PARAMETERS` (217) but omits the static `firmware_version` and `esc_type` fields from the HW5 devinfo payload, retaining only `hardware_version` for model identification. Payload: `[sig:U8][ver:U8][hardware_version:U128][com_version:U120][params:16×U8]` = 49 bytes. Returns zero length if the connected ESC protocol does not support compact mode.
+
+### MSP_SET_ESC_PARAMETERS_COMPACT
+
+New MSP command (229) to write ESC parameters in compact form. Accepts the same 49-byte payload as `MSP_ESC_PARAMETERS_COMPACT`. The FC reconstructs the full parameter buffer by preserving the cached `firmware_version` and `esc_type` fields before committing to the ESC. Returns error if compact mode is not supported for the connected ESC protocol.
+
 
 ## CLI Changes
 

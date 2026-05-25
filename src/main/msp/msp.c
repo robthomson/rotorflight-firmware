@@ -823,6 +823,16 @@ static bool mspCommonProcessOutCommand(int16_t cmdMSP, sbuf_t *dst, mspPostProce
             sbufWriteData(dst, escGetParamBuffer(), len);
         }
         break;
+
+    case MSP_ESC_PARAMETERS_COMPACT:
+        {
+            const uint8_t len = escGetCompactParamBufferLength();
+            if (len == 0)
+                return false;
+
+            sbufWriteData(dst, escGetCompactParamBuffer(), len);
+        }
+        break;
 #endif
 
     case MSP_BATTERY_STATE:
@@ -3109,7 +3119,20 @@ static mspResult_e mspProcessInCommand(mspDescriptor_t srcDesc, int16_t cmdMSP, 
                 return MSP_RESULT_ERROR;
         }
         break;
-    
+
+    case MSP_SET_ESC_PARAMETERS_COMPACT:
+        {
+            const uint8_t len = escGetCompactParamBufferLength();
+            if (len == 0)
+                return MSP_RESULT_ERROR;
+
+            sbufReadData(src, escGetCompactParamUpdBuffer(), len);
+
+            if (!escCommitCompactParameters())
+                return MSP_RESULT_ERROR;
+        }
+        break;
+
     case MSP_SET_4WIF_ESC_FWD_PROG:
         {
             if (ARMING_FLAG(ARMED)) {

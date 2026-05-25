@@ -101,6 +101,7 @@ enum {
 #define TELEMETRY_BUFFER_SIZE    140
 #define REQUEST_BUFFER_SIZE      64
 #define PARAM_BUFFER_SIZE        128
+#define PARAM_COMPACT_BUFFER_SIZE 49  // PARAM_HEADER_SIZE(2) + hw_ver(16) + params(31)
 #define PARAM_HEADER_SIZE        2
 #define PARAM_HEADER_SIG         0
 #define PARAM_HEADER_VER         1
@@ -165,6 +166,8 @@ static uint8_t paramBuffer[PARAM_BUFFER_SIZE] = { 0, };
 static uint8_t paramUpdBuffer[PARAM_BUFFER_SIZE] = { 0, };
 static uint8_t *paramPayload = paramBuffer + PARAM_HEADER_SIZE;
 static uint8_t *paramUpdPayload = paramUpdBuffer + PARAM_HEADER_SIZE;
+static uint8_t compactParamBuffer[PARAM_COMPACT_BUFFER_SIZE] = { 0, };
+static uint8_t compactParamUpdBuffer[PARAM_COMPACT_BUFFER_SIZE] = { 0, };
 static uint8_t paramVer = 0;
 static bool paramMspActive = false;
 
@@ -2215,6 +2218,11 @@ static serialReceiveCallbackPtr flySensorInit(bool bidirectional)
 #define PL5_RESP_WRITEPARAMS_TYPE           0x3835
 #define PL5_RESP_WRITEPARAMS_LENGTH         58
 #define PL5_RESP_WRITEPARAMS_ERR_LENGTH     9
+
+// Compact payload strips firmware_version[0..15] and esc_type[32..47] from devinfo,
+// keeping only hardware_version[16..31] for model identification.
+#define PL5_DEVINFO_HWVER_OFFSET            16
+#define PL5_DEVINFO_HWVER_LENGTH            16
 
 static uint8_t pl5Ping[] = { 0x1, 0xFD, 0x3, 0x3, 0x2C, 0x24, 0x0, 0x1, 0x60, 0x60 };
 static uint8_t pl5DevInfoReq[] = { 0x01, 0xFD, 0x03, 0x03, 0x2C, 0x25, 0x00, 0x20, 0xF1, 0xB8 };
@@ -4387,6 +4395,76 @@ uint8_t escGetParamBufferLength(void)
 #endif
 
     return fullLength;
+}
+
+uint8_t escGetCompactParamBufferLength(void)
+{
+    const uint8_t fullLength = escGetParamFullBufferLength();
+    if (fullLength == 0)
+        return 0;
+
+    if (escSig == ESC_SIG_PL5)
+        return PARAM_COMPACT_BUFFER_SIZE;
+
+    return 0;
+}
+
+uint8_t *escGetCompactParamBuffer(void)
+{
+    uint8_t *full = escGetParamBuffer();
+
+    if (escSig != ESC_SIG_PL5)
+        return full;
+
+    compactParamBuffer[PARAM_HEADER_SIG] = full[PARAM_HEADER_SIG];
+    compactParamBuffer[PARAM_HEADER_VER] = full[PARAM_HEADER_VER];
+    memcpy(compactParamBuffer + PARAM_HEADER_SIZE,
+           paramPayload + PL5_DEVINFO_HWVER_OFFSET,
+           PL5_DEVINFO_HWVER_LENGTH);
+    memcpy(compactParamBuffer + PARAM_HEADER_SIZE + PL5_DEVINFO_HWVER_LENGTH,
+           paramPayload + PL5_RESP_DEVINFO_PAYLOAD_LENGTH,
+           PL5_RESP_GETPARAMS_PAYLOAD_LENGTH);
+
+    return compactParamBuffer;
+}
+
+uint8_t *escGetCompactParamUpdBuffer(void)
+{
+    if (escSig != ESC_SIG_PL5)
+        return paramUpdBuffer;
+
+    return compactParamUpdBuffer;
+}
+
+bool escCommitCompactParameters(void)
+{
+    if (escSig != ESC_SIG_PL5)
+        return escCommitParameters();
+
+    paramUpdBuffer[PARAM_HEADER_SIG] = compactParamUpdBuffer[PARAM_HEADER_SIG];
+    paramUpdBuffer[PARAM_HEADER_VER] = compactParamUpdBuffer[PARAM_HEADER_VER];
+
+    // firmware_version: preserve from cache
+    memcpy(paramUpdPayload,
+           paramPayload,
+           PL5_DEVINFO_HWVER_OFFSET);
+
+    // hardware_version: from compact buffer
+    memcpy(paramUpdPayload + PL5_DEVINFO_HWVER_OFFSET,
+           compactParamUpdBuffer + PARAM_HEADER_SIZE,
+           PL5_DEVINFO_HWVER_LENGTH);
+
+    // esc_type: preserve from cache
+    memcpy(paramUpdPayload + PL5_DEVINFO_HWVER_OFFSET + PL5_DEVINFO_HWVER_LENGTH,
+           paramPayload + PL5_DEVINFO_HWVER_OFFSET + PL5_DEVINFO_HWVER_LENGTH,
+           PL5_RESP_DEVINFO_PAYLOAD_LENGTH - PL5_DEVINFO_HWVER_OFFSET - PL5_DEVINFO_HWVER_LENGTH);
+
+    // com_version + writable params: from compact buffer
+    memcpy(paramUpdPayload + PL5_RESP_DEVINFO_PAYLOAD_LENGTH,
+           compactParamUpdBuffer + PARAM_HEADER_SIZE + PL5_DEVINFO_HWVER_LENGTH,
+           PL5_RESP_GETPARAMS_PAYLOAD_LENGTH);
+
+    return escCommitParameters();
 }
 
 static bool is4wayEscSelected(void)

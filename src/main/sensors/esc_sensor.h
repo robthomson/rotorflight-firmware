@@ -63,3 +63,8 @@ uint8_t escSelect4WIfById(uint8_t id);
 uint8_t *escGetParamBuffer(void);
 uint8_t *escGetParamUpdBuffer(void);
 bool escCommitParameters(void);
+
+uint8_t escGetCompactParamBufferLength(void);
+uint8_t *escGetCompactParamBuffer(void);
+uint8_t *escGetCompactParamUpdBuffer(void);
+bool escCommitCompactParameters(void);

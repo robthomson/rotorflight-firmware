@@ -260,6 +260,9 @@
 #define MSP_ESC_PARAMETERS                   217
 #define MSP_SET_ESC_PARAMETERS               218
 
+#define MSP_ESC_PARAMETERS_COMPACT           224
+#define MSP_SET_ESC_PARAMETERS_COMPACT       229
+
 #define MSP_SET_RESET_CURR_PID               219
 #define MSP_SET_SENSOR_ALIGNMENT             220
 #define MSP_SET_LED_STRIP_MODECOLOR          221
