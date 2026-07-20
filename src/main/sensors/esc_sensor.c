@@ -4292,11 +4292,6 @@ void INIT_CODE validateAndFixEscSensorConfig(void)
 {
     switch (escSensorConfig()->protocol) {
         case ESC_SENSOR_PROTO_GRAUPNER:
-        case ESC_SENSOR_PROTO_XDFLY:
-        case ESC_SENSOR_PROTO_OMPHOBBY:
-        case ESC_SENSOR_PROTO_ZTW:     
-            escSensorConfigMutable()->halfDuplex = true;
-            break;
 #ifdef USE_TELEMETRY_CASTLE
         case ESC_SENSOR_PROTO_NONE:
             if (isMotorProtocolCastlePWM()) {
