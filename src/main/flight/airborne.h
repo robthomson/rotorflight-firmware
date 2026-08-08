@@ -22,6 +22,7 @@
 
 bool isHandsOn(void);
 bool isAirborne(void);
+uint32_t getLiftoffAgeMs(void);
 
 void airborneInit(void);
 void airborneUpdate(const float rc[4]);

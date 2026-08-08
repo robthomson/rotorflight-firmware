@@ -519,6 +519,10 @@ static const char * const lookupTableSmartFuelMode[] = {
 };
 #endif
 
+static const char * const lookupTableAirborneMode[] = {
+    "CONSERVATIVE", "STICK_RESPONSE",
+};
+
 #define LOOKUP_TABLE_ENTRY(name) { name, ARRAYLEN(name) }
 
 const lookupTableEntry_t lookupTables[] = {
@@ -636,6 +640,7 @@ const lookupTableEntry_t lookupTables[] = {
 #ifdef USE_SMARTFUEL
     LOOKUP_TABLE_ENTRY(lookupTableSmartFuelMode),
 #endif
+    LOOKUP_TABLE_ENTRY(lookupTableAirborneMode),
 };
 
 #undef LOOKUP_TABLE_ENTRY
@@ -1088,6 +1093,9 @@ const clivalue_t valueTable[] = {
     { "rc_max_throttle",            VAR_UINT16 | MASTER_VALUE, .config.minmaxUnsigned = { 0, PWM_PULSE_MAX }, PG_RC_CONTROLS_CONFIG, offsetof(rcControlsConfig_t, rc_max_throttle) },
     { "rc_smoothness",              VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 0, 250 }, PG_RC_CONTROLS_CONFIG, offsetof(rcControlsConfig_t, rc_smoothness) },
     { "rc_threshold",               VAR_UINT8  | MASTER_VALUE | MODE_ARRAY, .config.array.length = 4, PG_RC_CONTROLS_CONFIG, offsetof(rcControlsConfig_t, rc_threshold) },
+    { "airborne_mode",              VAR_UINT8  | MASTER_VALUE | MODE_LOOKUP, .config.lookup = { TABLE_AIRBORNE_MODE }, PG_RC_CONTROLS_CONFIG, offsetof(rcControlsConfig_t, airborne_mode) },
+    { "airborne_gyro_threshold",    VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 1, 100 }, PG_RC_CONTROLS_CONFIG, offsetof(rcControlsConfig_t, airborne_gyro_threshold) },
+    { "airborne_acc_threshold",     VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 5, 50 }, PG_RC_CONTROLS_CONFIG, offsetof(rcControlsConfig_t, airborne_acc_threshold) },
 
     { "deadband",                   VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 0, 100 }, PG_RC_CONTROLS_CONFIG, offsetof(rcControlsConfig_t, rc_deadband) },
     { "yaw_deadband",               VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 0, 100 }, PG_RC_CONTROLS_CONFIG, offsetof(rcControlsConfig_t, rc_yaw_deadband) },

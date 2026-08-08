@@ -44,6 +44,7 @@
 
 #include "flight/imu.h"
 #include "flight/gps_rescue.h"
+#include "flight/airborne.h"
 
 #include "sensors/acceleration.h"
 #include "sensors/gyro.h"
@@ -202,6 +203,16 @@ static float calcHorizonLevelStrength(void)
     return constrainf(horizonLevelStrength, 0, 1);
 }
 
+#define LIFTOFF_ENGAGE_RAMP_MS  300.0f
+
+static float liftoffRampFactor(void)
+{
+    const uint32_t age = getLiftoffAgeMs();
+    if (age == 0)
+        return 0.0f;
+    return constrainf((float)age / LIFTOFF_ENGAGE_RAMP_MS, 0.0f, 1.0f);
+}
+
 float angleModeApply(int axis, float pidSetpoint)
 {
     if (axis == FD_ROLL || axis == FD_PITCH)
@@ -210,6 +221,8 @@ float angleModeApply(int axis, float pidSetpoint)
 
         if (!isAirborne())
             errorAngle *= 0.25f;
+        else
+            errorAngle *= liftoffRampFactor();
 
         pidSetpoint = errorAngle * level.Gain;
     }
@@ -225,6 +238,8 @@ float horizonModeApply(int axis, float pidSetpoint)
 
         if (!isAirborne())
             errorAngle *= 0.25f;
+        else
+            errorAngle *= liftoffRampFactor();
 
         pidSetpoint += errorAngle * horizon.Gain * calcHorizonLevelStrength();
     }
