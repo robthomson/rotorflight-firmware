@@ -82,6 +82,7 @@ void resetPidProfile(pidProfile_t *pidProfile)
         .horizon.transition = 75,
         .horizon.tilt_effect = 75,
         .horizon.tilt_expert_mode = false,
+        .horizon.angle_limit = 55,
         .trainer.gain = 75,
         .trainer.angle_limit = 20,
         .trainer.lookahead_ms = 50,

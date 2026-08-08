@@ -1701,6 +1701,9 @@ void pidController(const pidProfile_t *pidProfile, timeUs_t currentTimeUs)
     UNUSED(pidProfile);
     UNUSED(currentTimeUs);
 
+    // Update leveling mode state (resets horizon activation timer when mode is off)
+    levelingUpdate();
+
     // Rotate pitch/roll axis error with yaw rotation
     rotateAxisError();
 
