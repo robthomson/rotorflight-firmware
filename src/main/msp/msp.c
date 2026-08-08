@@ -42,6 +42,7 @@
 #include "common/color.h"
 #include "common/huffman.h"
 #include "common/maths.h"
+#include "common/printf.h"
 #include "common/streambuf.h"
 #include "common/utils.h"
 
@@ -57,6 +58,7 @@
 #include "drivers/display.h"
 #include "drivers/dshot.h"
 #include "drivers/dshot_command.h"
+#include "drivers/fbus_sensor.h"
 #include "drivers/flash.h"
 #include "drivers/io.h"
 #include "drivers/motor.h"
@@ -1363,6 +1365,51 @@ static bool mspProcessOutCommand(int16_t cmdMSP, sbuf_t *dst)
         sbufWriteU8(dst, batteryConfig()->smartfuel_charge_drop_rate);
         sbufWriteU8(dst, batteryConfig()->smartfuel_sag_gain);
         break;
+#endif
+
+#if defined(USE_FBUS_MASTER) || defined(USE_SPORT_MASTER)
+    case MSP2_GET_FBUS_SENSORS: {
+        const uint8_t count = fbusSensorGetObservedCount();
+        sbufWriteU8(dst, count);
+
+        for (uint8_t i = 0; i < count; i++) {
+            const fbusObservedSensor_t *sensor = fbusSensorGetObserved(i);
+            if (!sensor) {
+                break;
+            }
+
+            sbufWriteU8(dst, sensor->physicalId);
+            sbufWriteU8(dst, sensor->source);
+            sbufWriteU8(dst, fbusSensorIsForwarded(sensor->physicalId) ? 1 : 0);
+            sbufWriteU32(dst, sensor->packetCount);
+
+            // Mirror the CLI's "ID_XXX" fallback for unnamed physical IDs so
+            // both surfaces show identical sensor names.
+            const char *sensorName = fbusSensorGetName(sensor->physicalId);
+            char nameBuffer[17];
+            if (strcmp(sensorName, "UNKNOWN") == 0) {
+                tfp_sprintf(nameBuffer, "ID_%u", sensor->physicalId);
+                sensorName = nameBuffer;
+            }
+            const uint8_t nameLen = (uint8_t)strlen(sensorName);
+            sbufWriteU8(dst, nameLen);
+            sbufWriteData(dst, sensorName, nameLen);
+
+            sbufWriteU8(dst, sensor->appIdCount);
+            for (uint8_t j = 0; j < sensor->appIdCount; j++) {
+                sbufWriteU16(dst, sensor->appIds[j]);
+            }
+        }
+        break;
+    }
+
+    case MSP2_GET_FBUS_MASTER_CONFIG: {
+        sbufWriteU8(dst, 1); // payload version -- only the forwarding slots so far
+        for (int i = 0; i < FBUS_MASTER_MAX_FORWARDED_SENSORS; i++) {
+            sbufWriteU8(dst, fbusMasterConfig()->forwardedSensors[i]);
+        }
+        break;
+    }
 #endif
 
     case MSP_RC:
@@ -3903,6 +3950,21 @@ static mspResult_e mspCommonProcessInCommand(mspDescriptor_t srcDesc, int16_t cm
         batteryConfigMutable()->smartfuel_charge_drop_rate = sbufReadU8(src);
         batteryConfigMutable()->smartfuel_sag_gain = sbufReadU8(src);
         smartFuelInit();
+        break;
+#endif
+
+#if defined(USE_FBUS_MASTER) || defined(USE_SPORT_MASTER)
+    case MSP2_CLEAR_FBUS_SENSORS:
+        fbusSensorClearObserved();
+        break;
+
+    case MSP2_SET_FBUS_MASTER_CONFIG:
+        for (int i = 0; i < FBUS_MASTER_MAX_FORWARDED_SENSORS; i++) {
+            fbusMasterConfigMutable()->forwardedSensors[i] = sbufReadU8(src);
+        }
+        // Forwarding buffers are only loaded from config at boot -- reload
+        // them now so the change is live immediately, without a reboot.
+        fbusSensorInitForwarding();
         break;
 #endif
 
