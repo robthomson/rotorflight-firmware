@@ -15,13 +15,20 @@
  * along with this software. If not, see <https://www.gnu.org/licenses/>.
  */
 
-#define MSP2_GET_SMARTFUEL_CONFIG           0x4000
-#define MSP2_SET_SMARTFUEL_CONFIG           0x4001
+#include "pg/pg_ids.h"
+#include "platform.h"
 
-#define MSP2_GET_FBUS_SENSORS               0x5F07
-#define MSP2_CLEAR_FBUS_SENSORS             0x5F08
-#define MSP2_GET_FBUS_MASTER_CONFIG         0x5F09
-#define MSP2_SET_FBUS_MASTER_CONFIG         0x5F0A
+#include "pg/rx_sbus_input.h"
 
-#define MSP2_GET_SBUS_INPUT_STATUS          0x5F0B
+#ifdef USE_RX_SBUS_INPUT
 
+PG_REGISTER_WITH_RESET_FN(sbusInputConfig_t, sbusInputConfig,
+                          PG_DRIVER_RX_SBUS_INPUT_CONFIG, 0);
+
+void pgResetFn_sbusInputConfig(sbusInputConfig_t *config)
+{
+    config->inverted = 0;
+    config->pinSwap = 0;
+}
+
+#endif

@@ -124,8 +124,25 @@ Other devices can be added starting from id 50.
 | FUNCTION_FBUS_MASTER         | 524288 |
 | FUNCTION_SPORT_MASTER        | 1048576 |
 | FUNCTION_SRXL2_ESC           | 2097152 |
+| FUNCTION_RX_SBUS_INPUT       | 4194304 |
 
 Note: values above `FUNCTION_LIDAR_TF` require more than 16 bits. `FUNCTION_SPORT_MASTER` = `(1<<20)` requires 21 bits.
+
+`FUNCTION_RX_SBUS_INPUT` assigns a UART to a secondary, independent SBUS receiver
+("SBUS in"). It is not the main RX link - it exists as a fallback: if the main RX
+link's signal is lost, the FC takes all RC channels (including aux/mode switches)
+from this port instead, bypassing the staged failsafe machinery (hold/land/cut)
+entirely, and reverts back automatically once the main link recovers. If the main
+link is present, this port's data has no effect. Takeover/revert is bounded by the
+main RX's own existing ~100ms signal-loss detection window (`rxSignalReceived`,
+`DELAY_100_MS` in `rx.c`'s `rxFrameCheck()`), not per-missed-frame. See
+`drivers/rx_sbus_input.c` and `rx/rx.c`'s `detectAndApplySignalLossBehaviour()`.
+Diagnostics are available read-only via `MSP2_GET_SBUS_INPUT_STATUS`.
+
+Electrical settings for this port are independent of the main RX's own
+`serialrx_inverted`/`serialrx_pinswap` (different physical UART):
+`sbus_input_inverted` and `sbus_input_pinswap` (both `OFF`/`ON`, default `OFF`),
+in `pg/rx_sbus_input.h`.
 
 ### 3. MSP Baudrates
 
