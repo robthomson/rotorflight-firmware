@@ -133,7 +133,11 @@ Note: values above `FUNCTION_LIDAR_TF` require more than 16 bits. `FUNCTION_SPOR
 link's signal is lost, the FC takes all RC channels (including aux/mode switches)
 from this port instead, bypassing the staged failsafe machinery (hold/land/cut)
 entirely, and reverts back automatically once the main link recovers. If the main
-link is present, this port's data has no effect. Takeover/revert is bounded by the
+link is present, this port's data has no effect. None of this applies if no
+backup protocol is configured (`provider` is `NONE`) or the backup link isn't
+currently up itself - in either case the main RX's normal staged failsafe
+(hold/land/cut) remains the fallback, exactly as it would without this feature.
+Takeover/revert is bounded by the
 main RX's own existing ~100ms signal-loss detection window (`rxSignalReceived`,
 `DELAY_100_MS` in `rx.c`'s `rxFrameCheck()`), not per-missed-frame. See
 `drivers/rx_input_backup.c` and `rx/rx.c`'s `detectAndApplySignalLossBehaviour()`.
