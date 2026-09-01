@@ -15,22 +15,14 @@
  * along with this software. If not, see <https://www.gnu.org/licenses/>.
  */
 
-#include "pg/pg_ids.h"
-#include "platform.h"
+#pragma once
 
-#include "pg/rx_input_backup.h"
+#include <stdbool.h>
 
-#ifdef USE_RX_INPUT_BACKUP
+#include "drivers/rx_input_backup.h"
 
-PG_REGISTER_WITH_RESET_FN(rxInputBackupConfig_t, rxInputBackupConfig,
-                          PG_DRIVER_RX_INPUT_BACKUP_CONFIG, 0);
+// FPort provider for the generic backup-RX framework (rx_input_backup.c).
+// Genuinely different framing from FBUS/FPort2 (see rx_input_backup_fbus.h) -
+// FPort uses HDLC-style byte-stuffing (0x7E/0x7D), not simple length-prefixing.
 
-void pgResetFn_rxInputBackupConfig(rxInputBackupConfig_t *config)
-{
-    config->provider = 0; // RX_INPUT_BACKUP_NONE
-    config->inverted = 0;
-    config->halfDuplex = 0;
-    config->pinSwap = 0;
-}
-
-#endif
+bool rxInputBackupFportInit(rxInputBackupOps_t *ops);

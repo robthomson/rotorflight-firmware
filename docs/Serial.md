@@ -137,19 +137,39 @@ link is present, this port's data has no effect. Takeover/revert is bounded by t
 main RX's own existing ~100ms signal-loss detection window (`rxSignalReceived`,
 `DELAY_100_MS` in `rx.c`'s `rxFrameCheck()`), not per-missed-frame. See
 `drivers/rx_input_backup.c` and `rx/rx.c`'s `detectAndApplySignalLossBehaviour()`.
-Diagnostics are available read-only via `MSP2_GET_RX_INPUT_BACKUP_STATUS`.
+Diagnostics are available read-only via `MSP2_GET_RX_INPUT_BACKUP_STATUS`, and
+provider/inverted/halfDuplex/pinSwap config can be read and written from the
+configurator via `MSP2_GET_RX_INPUT_BACKUP_CONFIG`/`MSP2_SET_RX_INPUT_BACKUP_CONFIG`
+(a changed value only takes effect after save+reboot, same as any other
+serial-port function/config change).
 
-Which protocol this port speaks is selected via `rx_input_backup_provider`
-(currently `SBUS` only - `pg/rx_input_backup.h`'s `provider` field). Adding a
-protocol is a small, additive change (see `drivers/rx_input_backup_sbus.c` for
-the template); there is deliberately no telemetry on this link, ever - it exists
-purely to hand over channel data, same as a physical backup satellite receiver.
+Which protocol this port speaks is selected via `rx_input_backup_provider`:
+`NONE`, `SBUS`, `FBUS`, `FPORT`, or `FPORT2` (`pg/rx_input_backup.h`'s
+`provider` field). `NONE` (value `0`, matching this codebase's usual
+"zero-init means off" convention) is the default for a freshly reset config -
+assigning a port `FUNCTION_RX_INPUT_BACKUP` alone no longer silently starts
+decoding SBUS on it; the port is reserved but never opened until a real
+protocol is chosen. FBUS is decoded as 16-channel frames only (its 8ch/24ch
+variants aren't supported yet). Adding another protocol is a small, additive
+change (see `drivers/rx_input_backup_sbus.c`/`_fbus.c`/`_fport.c` for the
+template); there is deliberately no telemetry on this link, ever, for any
+protocol - it exists purely to hand over channel data, same as a physical
+backup satellite receiver would.
 
 Electrical settings for this port are independent of the main RX's own
-`serialrx_inverted`/`serialrx_pinswap` (different physical UART), and apply
-uniformly across every provider: `rx_input_backup_inverted` and
-`rx_input_backup_pinswap` (both `OFF`/`ON`, default `OFF`), in
-`pg/rx_input_backup.h`.
+`serialrx_inverted`/`serialrx_halfduplex`/`serialrx_pinswap` (different
+physical UART): `rx_input_backup_inverted`, `rx_input_backup_halfduplex`, and
+`rx_input_backup_pinswap` (all `OFF`/`ON`, default `OFF`), in
+`pg/rx_input_backup.h`. `pinSwap` behaves identically for every protocol, but
+`inverted` and `halfDuplex` do not - each protocol's own native wiring
+convention differs (SBUS is natively inverted, FBUS/FPort/FPort2 are not; SBUS
+uses plain half-duplex, FBUS/FPort/FPort2 use push-pull half-duplex), so
+`OFF` (the default, "normal wiring for whichever protocol is selected") maps
+to a different underlying UART configuration depending on
+`rx_input_backup_provider` - each provider's own driver file handles this
+translation, exactly mirroring how `rx/sbus.c` and `rx/fbus.c`/`rx/fport.c`
+apply the main RX's own `serialrx_inverted`/`serialrx_halfduplex` in opposite
+directions for the same reason.
 
 ### 3. MSP Baudrates
 
