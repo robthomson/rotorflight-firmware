@@ -26,6 +26,8 @@
 
 #include "drivers/time.h"
 
+#include "fc/runtime_config.h"
+
 #include "io/serial.h"
 
 #include "pg/rx_input_backup.h"
@@ -70,6 +72,51 @@ static timeMs_t rxInputBackupLastValidFrameMs = 0;
 // moment, feeding zeroed channels) before any real frame has ever been seen.
 static bool rxInputBackupHasValidFrame = false;
 
+// Speed search for providers with a second speed (ops.altBaudRate), same
+// rules as rx/fbus.c: switch until valid frames arrive, then keep the speed.
+#define RX_INPUT_BACKUP_BAUD_HUNT_WINDOW_MS 150
+#define RX_INPUT_BACKUP_BAUD_LOCK_FRAMES 3
+#define RX_INPUT_BACKUP_BAUD_RELOCK_MS 1000
+
+static uint32_t rxInputBackupBaudRate;
+static bool rxInputBackupBaudLocked;
+static uint8_t rxInputBackupBaudGoodFrames;
+static timeMs_t rxInputBackupBaudLastEventMs;   // last speed switch or last valid frame
+
+static void rxInputBackupBaudService(bool validFrame)
+{
+    const timeMs_t now = millis();
+
+    if (!rxInputBackupOps.altBaudRate || !rxInputBackupPort->vTable->serialSetBaudRate) {
+        return;
+    }
+
+    if (validFrame) {
+        rxInputBackupBaudLastEventMs = now;
+        if (!rxInputBackupBaudLocked && ++rxInputBackupBaudGoodFrames >= RX_INPUT_BACKUP_BAUD_LOCK_FRAMES) {
+            rxInputBackupBaudLocked = true;
+        }
+        return;
+    }
+
+    const timeMs_t idleMs = now - rxInputBackupBaudLastEventMs;
+    if (rxInputBackupBaudLocked) {
+        // A lost link while armed is the radio, not a changed receiver setting
+        if (ARMING_FLAG(ARMED) || idleMs < RX_INPUT_BACKUP_BAUD_RELOCK_MS) {
+            return;
+        }
+        rxInputBackupBaudLocked = false;
+    } else if (idleMs < RX_INPUT_BACKUP_BAUD_HUNT_WINDOW_MS) {
+        return;
+    }
+
+    rxInputBackupBaudRate = (rxInputBackupBaudRate == rxInputBackupOps.baudRate)
+        ? rxInputBackupOps.altBaudRate : rxInputBackupOps.baudRate;
+    serialSetBaudRate(rxInputBackupPort, rxInputBackupBaudRate);
+    rxInputBackupBaudGoodFrames = 0;
+    rxInputBackupBaudLastEventMs = now;
+}
+
 bool rxInputBackupIsEnabled(void)
 {
     return rxInputBackupPort != NULL;
@@ -90,10 +137,13 @@ void rxInputBackupPoll(void)
         return;
     }
 
-    if (rxInputBackupOps.update(rxInputBackupChannel, rxInputBackupOps.channelCount)) {
+    const bool validFrame = rxInputBackupOps.update(rxInputBackupChannel, rxInputBackupOps.channelCount);
+    if (validFrame) {
         rxInputBackupHasValidFrame = true;
         rxInputBackupLastValidFrameMs = millis();
     }
+
+    rxInputBackupBaudService(validFrame);
 
     if (rxInputBackupHasValidFrame && (timeMs_t)(millis() - rxInputBackupLastValidFrameMs) >= RX_INPUT_BACKUP_STALE_MS) {
         // No explicit parser reset here (unlike the pre-refactor SBUS-only driver) -
@@ -185,6 +235,11 @@ void rxInputBackupInit(void)
 
     rxInputBackupLastValidFrameMs = 0;
     rxInputBackupHasValidFrame = false;
+
+    rxInputBackupBaudRate = rxInputBackupOps.baudRate;
+    rxInputBackupBaudLocked = false;
+    rxInputBackupBaudGoodFrames = 0;
+    rxInputBackupBaudLastEventMs = millis();
 
     // Only pinSwap is applied generically here - inverted/halfDuplex are
     // protocol-specific (see rxInputBackupOps_t's own comment) and already
