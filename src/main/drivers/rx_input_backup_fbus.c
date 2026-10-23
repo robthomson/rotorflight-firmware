@@ -63,8 +63,9 @@
 // fbusRxInit(rxConfig, rxRuntimeState, isFPORT2) confirms isFPORT2 only ever
 // changes which baud constant gets passed to openSerialPort(), nothing else -
 // so both rxInputBackupFbusInit() and rxInputBackupFport2Init() below share
-// this file's one static parser/decoder, differing only in the baud they
-// report back to the generic layer via ops->baudRate.
+// this file's one static parser/decoder, differing only in which speed they
+// start at. Each reports the other speed as ops->altBaudRate, and the generic
+// layer switches to it if the receiver is set to that one.
 
 // Frame layout, no byte-stuffing: [length=24][type=0xFF][23-byte sbusChannels_t]
 // [rssi][checksum], 27 bytes total on the wire. Constants reused verbatim from
@@ -235,7 +236,7 @@ static bool fbusInputUpdate(float *channels, uint8_t channelCount)
     return true;
 }
 
-static bool fbusInputInitCommon(rxInputBackupOps_t *ops, uint32_t baudRate)
+static bool fbusInputInitCommon(rxInputBackupOps_t *ops, uint32_t baudRate, uint32_t altBaudRate)
 {
     fbusInputRxRuntimeState.channelData = fbusInputChannelData;
     fbusInputResetParser();
@@ -248,6 +249,7 @@ static bool fbusInputInitCommon(rxInputBackupOps_t *ops, uint32_t baudRate)
     // rx_input_backup.c. Half-duplex uses SERIAL_BIDIR|SERIAL_BIDIR_PP (push-
     // pull), unlike SBUS's plain SERIAL_BIDIR.
     ops->baudRate = baudRate;
+    ops->altBaudRate = altBaudRate;
     ops->portOptions = FBUS_INPUT_PORT_OPTIONS
         | (rxInputBackupConfig()->inverted ? SERIAL_INVERTED : SERIAL_NOT_INVERTED)
         | (rxInputBackupConfig()->halfDuplex ? (SERIAL_BIDIR | SERIAL_BIDIR_PP) : SERIAL_UNIDIR);
@@ -258,14 +260,15 @@ static bool fbusInputInitCommon(rxInputBackupOps_t *ops, uint32_t baudRate)
     return true;
 }
 
+// Both start at their own speed and find the other one if the receiver uses it
 bool rxInputBackupFbusInit(rxInputBackupOps_t *ops)
 {
-    return fbusInputInitCommon(ops, 460800);
+    return fbusInputInitCommon(ops, 460800, 115200);
 }
 
 bool rxInputBackupFport2Init(rxInputBackupOps_t *ops)
 {
-    return fbusInputInitCommon(ops, 115200);
+    return fbusInputInitCommon(ops, 115200, 460800);
 }
 
 #endif // USE_RX_INPUT_BACKUP_FBUS
