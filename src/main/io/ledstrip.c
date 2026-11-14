@@ -341,7 +341,11 @@ bool parseLedStripConfig(int ledIndex, const char *config)
             } else {
                 if (parseState < BLINK_PATTERN && (parseState != RING_COLORS && !*config))
                     return false;
-                strcpy(chunk, "0"); // optional parameter, defaults to 0
+                // At the end of the string this is the last field given (or an
+                // empty chunk for an absent optional one, which parses as 0).
+                // Otherwise the chunk overflowed the buffer: ignore it.
+                if (*config)
+                    strcpy(chunk, "0");
             }
         }
         switch (parseState) {
@@ -966,6 +970,13 @@ static void applyLarsonScannerLayer(bool updateNow, timeUs_t *timer)
     }
 }
 
+// Random integer in [min, max). Returns min for an empty range, so a
+// ledstrip_flicker_rate of 100 does not divide by zero.
+static int randomInt(int min, int max)
+{
+    return (max > min) ? min + (int)(randomU32() % (uint32_t)(max - min)) : min;
+}
+
 static void applyLedFlickerLayer(bool updateNow, timeUs_t *timer)
 {
     if (updateNow) {
@@ -978,7 +989,7 @@ static void applyLedFlickerLayer(bool updateNow, timeUs_t *timer)
         if (!ledGetOverlayBit(ledConfig, LED_OVERLAY_FLICKER))
             continue;
 
-        if (rand() % 5 == 0) {
+        if (randomU32() % 5 == 0) {
             hsvColor_t color;
             getLedHsv(i, &color);
             color.v = randomInt(1, 256);

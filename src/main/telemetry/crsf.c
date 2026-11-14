@@ -1093,10 +1093,10 @@ void crsfProcessDisplayPortCmd(uint8_t *frameStart)
 static int crsfTransmitSbufBuf(sbuf_t *dst, uint8_t *frame)
 {
     // frame size including CRC
-    const size_t frameSize = crsfSbufLen(dst) + 2;
+    const size_t frameSize = crsfSbufLen(dst) + 1;
 
-    // Set frame length into the placeholder
-    crsfFrame[1] = frameSize - 3;
+    // Set frame length (without device address and frame length) into the placeholder
+    crsfFrame[1] = frameSize - 2;
 
     // frame CRC
     crc8_dvb_s2_sbuf_append(dst, &crsfFrame[2]); // start at byte 2, since CRC does not include device address and frame length
@@ -1380,7 +1380,7 @@ static void INIT_CODE crsfInitCustomTelemetry(void)
                     if (telemetryConfig()->telemetry_interval[j])
                         sensor->fast_interval = telemetryConfig()->telemetry_interval[j];
                     if (sensor->slow_interval > 1000)
-                        sensor->slow_interval += rand() % 100;
+                        sensor->slow_interval += randomU32() % 100;
                     telemetryScheduleAdd(sensor);
                 }
             }
