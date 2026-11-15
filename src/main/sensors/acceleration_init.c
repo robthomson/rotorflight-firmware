@@ -239,10 +239,11 @@ retry:
         FALLTHROUGH;
 #endif
 
-#if defined(USE_ACC_SPI_ICM42605) || defined(USE_ACC_SPI_ICM42688P) || defined(USE_ACC_SPI_ICM40608)
+#if defined(USE_ACC_SPI_ICM42605) || defined(USE_ACC_SPI_ICM42688P) || defined(USE_ACC_SPI_ICM40608) || defined(USE_ACC_SPI_IIM42652)
     case ACC_ICM42605:
     case ACC_ICM42688P:
     case ACC_ICM40608:
+    case ACC_IIM42652:
         if (icm426xxSpiAccDetect(dev)) {
             switch (dev->mpuDetectionResult.sensor) {
             case ICM_42605_SPI:
@@ -253,6 +254,9 @@ retry:
                 break;
             case ICM_40608_SPI:
                 accHardware = ACC_ICM40608;
+                break;
+            case IIM_42652_SPI:
+                accHardware = ACC_IIM42652;
                 break;
             default:
                 accHardware = ACC_NONE;
@@ -394,7 +398,13 @@ bool accInit(uint16_t accSampleRateHz)
     acc.sampleRateHz = accSampleRateHz;
 
     // Valid key can't be 0 or 1
+#if defined(SIMULATOR_BUILD)
+    // No UID_BASE in a process: use the target's fixed U_ID_x values.
+    const uint32_t uid[3] = { U_ID_0, U_ID_1, U_ID_2 };
+    accelerationRuntime.calibrationKey = (crc16_ccitt_update(0, (void *)uid, sizeof(uid)) % 65521) + 2;
+#else
     accelerationRuntime.calibrationKey = (crc16_ccitt_update(0, (void *)UID_BASE, 12) % 65521) + 2;
+#endif
 
     accInitFilters();
 
